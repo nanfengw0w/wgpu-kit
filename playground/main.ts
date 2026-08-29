@@ -66,7 +66,7 @@ presetSel.onchange = modeSel.onchange = colorSel.onchange = countInput.onchange 
 countInput.oninput = updateCountLabel;
 
 $('apply').onclick = () => { void rebuild(); };
-$('random').onclick = () => {
+$('random').onclick = () => { // SHUFFLE:随机预设 + 随机种子
   const presets: string[] = ['cells', 'snakes', 'orbitals', 'viruses', 'random'];
   presetSel.value = presets[Math.floor(Math.random() * presets.length)]!;
   seedInput.value = Math.random().toString(36).slice(2, 8);
