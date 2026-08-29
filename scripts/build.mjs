@@ -46,7 +46,7 @@ for (const f of ['index.js', 'particles.js', 'three.js']) {
 }
 const coreGz = gzipSync(readFileSync(join(DIST, 'index.js'))).length / 1024;
 const withPackGz = gzipSync(readFileSync(join(DIST, 'particles.js'))).length / 1024;
-if (coreGz > 8) { console.error(`  ✗ core 超预算: ${coreGz.toFixed(2)} > 8 kB`); fail = true; }
+if (coreGz > 15) { console.error(`  ✗ core 超预算: ${coreGz.toFixed(2)} > 15 kB`); fail = true; } // v0.9.11:主入口含 particles(开箱即用),预算 8→15
 if (withPackGz > 15) { console.error(`  ✗ core+particles 超预算: ${withPackGz.toFixed(2)} > 15 kB`); fail = true; }
 console.log(fail ? '\n构建完成,但超出性能预算!' : '\n✓ 构建完成,体积在性能预算内');
 process.exit(fail ? 1 : 0);
