@@ -1,11 +1,11 @@
 # wgpu-kit
 
 **Browser GPGPU middle layer. 200,000 particles at 142fps — in 5 lines of code.**
-Browser GPGPU middleware: all the WebGPU boilerplate, wrapped into two simple API layers. 中文文档:[README.zh-CN.md](README.zh-CN.md)
+Browser GPGPU middleware: all the WebGPU boilerplate, wrapped into two simple API layers. nanfengw0w:[README.zh-CN.md](README.zh-CN.md)
 
-[**API Reference**](docs/API.md) · Changelog: see [GitHub releases](https://github.com/你的用户名/wgpu-kit/releases)
+[**API Reference**](docs/API.md) · Changelog: see [GitHub releases](https://github.com/nanfengw0w/wgpu-kit/releases)
 
-![playground](docs/assets/hero-species.png)
+![playground](screenshot.png)
 
 ## Quick start
 
