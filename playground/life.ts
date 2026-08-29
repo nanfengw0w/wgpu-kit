@@ -50,7 +50,7 @@ async function loop() {
   sim?.tick();
   const { fps } = sim!.stats();
   const ctx = await GpuContext.get();
-  stats.innerHTML = `<b>${fps.toFixed(0)}</b> fps · ${kind} · ${ctx.adapterInfo}`;
+  stats.innerHTML = `<b>${fps.toFixed(0)}</b> fps / ${kind.toUpperCase()} / ${ctx.adapterInfo}`;
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
@@ -69,12 +69,12 @@ if (verifySecs > 0) {
         let variance = 0;
         for (let i = 0; i < b.length; i += 97) { const d = b[i]! - mean; variance += d * d; }
         const std = Math.sqrt(variance / Math.ceil(b.length / 97));
-        report('life-turing-pattern', finite && std > 0.05, `B 通道标准差 ${std.toFixed(3)}(阈值 0.05,出现花纹)`);
+        report('life-turing-pattern', finite && std > 0.05, `B-channel std ${std.toFixed(3)} (threshold 0.05)`);
       } else if (kind === 'physarum') {
         const t = await (sim as PhysarumSim).sampleTrail();
         let finite = true; let maxv = 0;
         for (let i = 0; i < t.length; i += 89) { const v = t[i]!; if (!Number.isFinite(v)) { finite = false; break; } if (v > maxv) maxv = v; }
-        report('life-physarum-trail', finite && maxv > 3, `信息素峰值 ${maxv.toFixed(1)}(阈值 3,轨迹在沉积)`);
+        report('life-physarum-trail', finite && maxv > 3, `trail peak ${maxv.toFixed(1)} (threshold 3)`);
       } else if (kind === 'boids') {
         const { pos, vel } = (sim as BoidsSim).buffers();
         const p = (await pos.read()) as Float32Array;
@@ -85,7 +85,7 @@ if (verifySecs > 0) {
           if (Math.abs(p[i]!) > 1.01 || Math.abs(p[i + 1]!) > 1.01) { inBounds = false; }
           moving += Math.hypot(v[i]!, v[i + 1]!);
         }
-        report('life-boids-flock', finite && inBounds && moving > 0, `有限=${finite} 界内=${inBounds} 平均速度=${(moving / (v.length / 2)).toFixed(4)}`);
+        report('life-boids-flock', finite && inBounds && moving > 0, `finite=${finite} inBounds=${inBounds} meanSpeed=${(moving / (v.length / 2)).toFixed(4)}`);
       } else {
         const { pos } = (sim as TentaclesSim).buffers();
         const p = (await pos.read()) as Float32Array;
@@ -100,7 +100,7 @@ if (verifySecs > 0) {
           if (err > worst) worst = err;
           checked++;
         }
-        report('life-tentacles-constraint', finite && worst < 1e-2, `约束残差最大 ${worst.toFixed(5)}(阈值 0.01,${checked} 节)`);
+        report('life-tentacles-constraint', finite && worst < 1e-2, `max constraint residual ${worst.toFixed(5)} (threshold 0.01, ${checked} nodes)`);
       }
       const ctx = await GpuContext.get();
       (window as unknown as { __adapter: string }).__adapter = ctx.adapterInfo;

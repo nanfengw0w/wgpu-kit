@@ -1,52 +1,54 @@
 <!doctype html>
-<html lang="zh">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>wgpu-kit · 宇宙画廊</title>
+  <title>wgpu-kit gallery</title>
   <style>
     :root { color-scheme: dark; }
-    html, body { margin: 0; background: #05070c; color: #cdd6e4; font: 14px/1.6 ui-monospace, Consolas, monospace; }
-    header { padding: 28px 32px 8px; }
-    header h1 { margin: 0; font-size: 22px; color: #fff; }
-    header h1 span { color: #7ea2ff; font-weight: 400; }
-    header p { color: #8fa3c4; margin: 6px 0 0; }
-    main { padding: 16px 32px 48px; }
-    h2 { font-size: 15px; color: #a9c1ff; margin: 26px 0 10px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    html, body { margin: 0; background: #0a0b0d; color: #d6d7da; font: 13px/1.7 ui-monospace, Consolas, monospace; }
+    header { padding: 32px 36px 10px; }
+    header h1 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #fff; }
+    header h1 span { color: #7d8089; font-weight: 400; }
+    header p { color: #7d8089; margin: 8px 0 0; font-size: 12px; }
+    main { padding: 12px 36px 56px; }
+    h2 { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #7d8089; margin: 28px 0 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
     .card {
-      display: block; background: #0d1420; border: 1px solid #26314a; border-radius: 10px;
-      padding: 14px; text-decoration: none; color: #cdd6e4; transition: border-color .15s, transform .15s;
+      display: block; background: #101114; border: 1px solid #26282e;
+      padding: 13px 15px; text-decoration: none; color: #d6d7da; transition: border-color 0.15s;
     }
-    .card:hover { border-color: #4b6bb0; transform: translateY(-2px); }
-    .card b { color: #fff; display: block; margin-bottom: 4px; }
-    .card span { color: #8fa3c4; font-size: 12px; word-break: break-all; }
-    .card .del {
-      float: right; color: #ff7a6b; cursor: pointer; border: none; background: none; font: inherit;
-    }
+    .card:hover { border-color: #3fbf9f; }
+    .card b { display: block; margin-bottom: 3px; font-weight: 600; letter-spacing: 0.04em; }
+    .card span { color: #7d8089; font-size: 11px; word-break: break-all; }
+    .card .del { float: right; color: #7d8089; cursor: pointer; border: none; background: none; font: inherit; }
+    .card .del:hover { color: #e06c60; }
     .import { display: flex; gap: 8px; margin-top: 10px; }
     .import input {
-      flex: 1; background: #0d1420; border: 1px solid #26314a; border-radius: 6px;
-      color: #cdd6e4; padding: 8px 10px; font: inherit;
+      flex: 1; background: #101114; border: 1px solid #26282e;
+      color: #d6d7da; padding: 8px 10px; font: inherit;
     }
+    .import input:focus { outline: none; border-color: #3fbf9f; }
     .import button, .back {
-      background: #16233c; color: #cdd6e4; border: 1px solid #2c3d63; border-radius: 6px;
+      background: transparent; color: #d6d7da; border: 1px solid #26282e;
       padding: 8px 14px; font: inherit; cursor: pointer; text-decoration: none;
+      letter-spacing: 0.05em; text-transform: uppercase; font-size: 11px;
     }
+    .import button:hover, .back:hover { border-color: #3fbf9f; color: #3fbf9f; }
   </style>
 </head>
 <body>
   <header>
-    <h1>wgpu-kit <span>宇宙画廊</span></h1>
-    <p>每个链接都是一个可复现的宇宙:精选 + 你收藏的。点开即玩,🔗 复制链接去分享。</p>
-    <p><a class="back" href="./index.html">← 回 playground</a></p>
+    <h1>wgpu-kit <span>gallery</span></h1>
+    <p>Every link is a reproducible universe. Click to open. STAR in the playground saves it here; paste a shared link to import.</p>
+    <p><a class="back" href="./index.html">&larr; PLAYGROUND</a></p>
   </header>
   <main>
-    <h2>精选</h2>
+    <h2>Curated</h2>
     <div class="grid" id="curated"></div>
-    <h2>我的收藏(localStorage)</h2>
+    <h2>Starred (localStorage)</h2>
     <div class="import">
-      <input id="paste" placeholder="粘贴别人分享的链接导入…" spellcheck="false" />
-      <button id="importBtn">导入</button>
+      <input id="paste" placeholder="Paste a shared universe link to import&hellip;" spellcheck="false" />
+      <button id="importBtn">IMPORT</button>
     </div>
     <div class="grid" id="fav"></div>
   </main>

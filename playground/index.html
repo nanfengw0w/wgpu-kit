@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>wgpu-kit playground · 粒子生命</title>
+  <title>wgpu-kit playground</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -11,43 +11,43 @@
   <div id="hud">
     <div class="row title">wgpu-kit <span>playground</span></div>
     <div class="row">
-      <label>预设 <select id="preset">
-        <option value="cells">cells · 细胞</option>
-        <option value="snakes">snakes · 蛇群</option>
-        <option value="orbitals">orbitals · 轨道</option>
-        <option value="viruses">viruses · 病毒</option>
-        <option value="random">random · 随机宇宙</option>
+      <label>PRESET <select id="preset">
+        <option value="cells">CELLS · CLASSIC</option>
+        <option value="snakes">SNAKES</option>
+        <option value="orbitals">ORBITALS</option>
+        <option value="viruses">VIRUSES</option>
+        <option value="random">RANDOM</option>
       </select></label>
-      <label>算法 <select id="mode">
-        <option value="grid">grid · 10万+</option>
-        <option value="tiled">tiled</option>
-        <option value="n2">n2</option>
+      <label>MODE <select id="mode">
+        <option value="grid">GRID · 100K+</option>
+        <option value="tiled">TILED</option>
+        <option value="n2">N2</option>
       </select></label>
     </div>
     <div class="row">
-      <label>粒子 <input id="count" type="range" min="2000" max="200000" step="2000" value="16000" /><span id="countLabel"></span></label>
+      <label>PARTICLES <input id="count" type="range" min="2000" max="200000" step="2000" value="16000" /><span id="countLabel"></span></label>
     </div>
     <div class="row">
-      <label>种子 <input id="seed" type="text" value="wgpu-kit" spellcheck="false" /></label>
-      <label>着色 <select id="color">
-        <option value="species">物种</option>
-        <option value="velocity">速度</option>
+      <label>SEED <input id="seed" type="text" value="wgpu-kit" spellcheck="false" /></label>
+      <label>COLOR <select id="color">
+        <option value="species">SPECIES</option>
+        <option value="velocity">VELOCITY</option>
       </select></label>
     </div>
     <div class="row btns">
-      <button id="random" title="随机一个宇宙">🎲 随机宇宙</button>
-      <button id="apply">应用</button>
-      <button id="copy" title="复制可分享链接">🔗 复制链接</button>
+      <button id="random" title="Random universe">RANDOM</button>
+      <button id="apply">APPLY</button>
+      <button id="copy" title="Copy shareable link">COPY LINK</button>
     </div>
     <div class="row btns">
-      <button id="record" title="录制画布为视频(mp4/webm)">⏺ 录制</button>
-      <button id="fav" title="收藏到本地画廊">⭐ 收藏</button>
-      <button id="toggleMatrix" title="可视化编辑 4×4 力矩阵">🎯 力矩阵</button>
-      <a id="galleryLink" href="./gallery.html">🖼 画廊</a>
+      <button id="record" title="Record canvas to video (webm/mp4)">REC</button>
+      <button id="fav" title="Save to local gallery">STAR</button>
+      <button id="toggleMatrix" title="Edit 4x4 force matrix">MATRIX</button>
+      <a id="galleryLink" href="./gallery.html">GALLERY</a>
     </div>
     <div id="matrix" class="hidden">
       <div class="mgrid" id="mgrid"></div>
-      <div class="mhint">行=施加者 列=承受者 · 拖动改(上↑吸引/下↓排斥) · 双击归零 · 即时生效</div>
+      <div class="mhint">row = actor, col = target. drag to set (up = attract, down = repel). double-click to zero. live.</div>
     </div>
     <div class="row stats" id="stats"></div>
   </div>
