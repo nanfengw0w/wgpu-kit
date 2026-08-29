@@ -10,7 +10,7 @@ const CURATED: Card[] = [
   { name: 'SNAKES UNIVERSE', url: './index.html?p=snakes&m=grid&n=66000&s=ourob0ros' },
   { name: 'ORBITALS UNIVERSE', url: './index.html?p=orbitals&m=grid&n=66000&s=kepler' },
   { name: 'VIRUSES UNIVERSE', url: './index.html?p=viruses&m=grid&n=66000&s=phage' },
-  { name: 'RANDOM UNIVERSE', url: './index.html?p=random&m=grid&n=66000&s=meow' },
+  { name: 'RANDOM MATRIX UNIVERSE', url: './index.html?p=random&m=grid&n=66000&s=meow' },
   { name: 'TURING · CORAL', url: './life.html?sim=turing' },
   { name: 'PHYSARUM NETWORK', url: './life.html?sim=physarum' },
   { name: 'BOIDS FLOCK', url: './life.html?sim=boids' },
