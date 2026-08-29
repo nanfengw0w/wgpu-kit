@@ -1,0 +1,93 @@
+{
+  "name": "wgpu-kit",
+  "version": "0.0.1",
+  "description": "Browser GPGPU middle layer: 100k particles in 5 lines. WebGPU compute without the boilerplate.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "webgpu",
+    "gpgpu",
+    "compute",
+    "wgsl",
+    "particles",
+    "simulation",
+    "creative-coding",
+    "threejs"
+  ],
+  "sideEffects": false,
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./particles": {
+      "types": "./dist/packs/particles/index.d.ts",
+      "import": "./dist/particles.js"
+    },
+    "./three": {
+      "types": "./dist/interop/three.d.ts",
+      "import": "./dist/three.js"
+    },
+    "./life": {
+      "types": "./dist/packs/life/index.d.ts",
+      "import": "./dist/life.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react.js"
+    },
+    "./fields": {
+      "types": "./dist/packs/fields/index.d.ts",
+      "import": "./dist/fields.js"
+    },
+    "./image": {
+      "types": "./dist/packs/image/index.d.ts",
+      "import": "./dist/image.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js"
+    }
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "vite playground",
+    "build": "node scripts/build.mjs",
+    "build:playground": "vite build playground",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "bundle:tests": "esbuild tests/gpu/smoke.ts --bundle --format=esm --outfile=tests/gpu/smoke.bundle.js --log-level=warning && esbuild tests/gpu/bench.ts --bundle --format=esm --outfile=tests/gpu/bench.bundle.js --log-level=warning && esbuild tests/gpu/packages.ts --bundle --format=esm --outfile=tests/gpu/packages.bundle.js --log-level=warning",
+    "verify": "node scripts/verify.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@webgpu/types": "^0.1.64",
+    "esbuild": "^0.28.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/你的用户名/wgpu-kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/你的用户名/wgpu-kit/issues"
+  },
+  "homepage": "https://github.com/你的用户名/wgpu-kit#readme"
+}

@@ -1,0 +1,8 @@
+{
+  "page": "tests/gpu/smoke.html",
+  "mode": "cdp",
+  "adapter": null,
+  "wallMs": 62428,
+  "results": [],
+  "browser": "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+}

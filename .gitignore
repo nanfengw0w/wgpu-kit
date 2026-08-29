@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-esm/
+*.tsbuildinfo
+
+# Playground / docs site build
+playground/dist/
+playground/.vite/
+dist-playground/
+
+# Test & coverage
+coverage/
+.vitest/
+tests/gpu/smoke.bundle.js
+tests/gpu/bench.bundle.js
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
