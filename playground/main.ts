@@ -75,7 +75,7 @@ $('random').onclick = () => {
 $('copy').onclick = async () => {
   syncUrl();
   await navigator.clipboard?.writeText(location.href).catch(() => undefined);
-  toast('✓ 链接已复制,去分享这个宇宙');
+  toast('LINK COPIED');
 };
 
 // —— 录制(MediaRecorder,mp4 优先) ——
@@ -85,17 +85,17 @@ recordBtn.onclick = async () => {
   if (recorder?.recording) {
     const r = await recorder.stop();
     document.getElementById('hud')!.classList.remove('recording');
-    recordBtn.textContent = '⏺ 录制';
+    recordBtn.textContent = 'REC';
     const ext = r.mimeType.includes('mp4') ? 'mp4' : 'webm';
     downloadBlob(r.blob, `wgpu-kit-universe.${ext}`);
-    toast(`✓ 录制 ${r.seconds.toFixed(1)}s / ${(r.bytes / 1024 / 1024).toFixed(2)} MB · ${ext} 已下载`);
+    toast(`RECORDED ${r.seconds.toFixed(1)}s / ${(r.bytes / 1024 / 1024).toFixed(2)} MB (${ext.toUpperCase()}) SAVED`);
     (window as unknown as Record<string, unknown>)['__recordResult'] = r.bytes;
     return;
   }
   recorder = recorder ?? new CanvasRecorder();
   recorder.start($<HTMLCanvasElement>('cv'));
   document.getElementById('hud')!.classList.add('recording');
-  recordBtn.textContent = '⏹ 停止';
+  recordBtn.textContent = 'STOP';
 };
 
 // —— 收藏到本地画廊 ——
@@ -105,7 +105,7 @@ $('fav').onclick = () => {
   const c = currentConfig();
   list.unshift({ name: `${c.forces} · ${c.count.toLocaleString()} · ${c.seed}`, url: location.href });
   localStorage.setItem('wgpu-kit-gallery', JSON.stringify(list.slice(0, 48)));
-  toast('⭐ 已收藏,画廊可见');
+  toast('SAVED TO GALLERY');
 };
 
 // —— 4×4 力矩阵可视化编辑器 ——
@@ -220,7 +220,7 @@ async function loop() {
   if (dt >= 500) {
     const { fps } = sim!.stats();
     const ctx = await GpuContext.get();
-    stats.innerHTML = `<b>${fps.toFixed(0)}</b> fps · <b>${Number(countInput.value).toLocaleString()}</b> 粒子 · ${modeSel.value}<br/>${ctx.adapterInfo} · ${lastPreset} · seed=${seedInput.value}`;
+    stats.innerHTML = `<b>${fps.toFixed(0)}</b> fps / <b>${Number(countInput.value).toLocaleString()}</b> particles / ${modeSel.value}<br/>${ctx.adapterInfo} / ${lastPreset} / seed=${seedInput.value}`;
     last = now;
   }
   requestAnimationFrame(loop);
@@ -264,11 +264,11 @@ if (waitSecs > 0) {
     // 阈值按规模分档(邻域成本随密度上升;grid 模式为大规模而生)
     const threshold = n <= 20_000 ? 30 : n <= 100_000 ? 20 : 12;
     const { fps } = sim!.stats();
-    report('playground-fps', fps >= threshold, `${fps.toFixed(1)} fps @ ${n.toLocaleString()} (${modeSel.value});阈值 ${threshold}`);
+    report('playground-fps', fps >= threshold, `${fps.toFixed(1)} fps @ ${n.toLocaleString()} (${modeSel.value}); threshold ${threshold}`);
     report('playground-no-boot-error', results.every((r) => r.name !== 'playground-boot' || r.pass));
     const gpuErrors = sim!.stats().gpuErrors;
     const lastErr = (window as unknown as { __firstGpuError?: string }).__firstGpuError;
-    report('playground-no-gpu-errors', gpuErrors === 0, `GPU 运行期错误 ${gpuErrors} 条${lastErr ? ' | 首条: ' + lastErr.slice(0, 220) : ''}`);
+    report('playground-no-gpu-errors', gpuErrors === 0, `runtime GPU errors: ${gpuErrors}${lastErr ? ' | first: ' + lastErr.slice(0, 200) : ''}`);
     try {
       const ctx = await GpuContext.get();
       report('playground-adapter', true, ctx.adapterInfo);

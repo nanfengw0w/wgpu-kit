@@ -9,36 +9,36 @@ const line = (ok: boolean, text: string, hint = '') => {
 };
 
 async function main() {
-  line(typeof navigator !== 'undefined', '浏览器环境', navigator.userAgent.slice(0, 80));
+  line(typeof navigator !== 'undefined', 'Browser', navigator.userAgent.slice(0, 80));
 
   if (!('gpu' in navigator) || !navigator.gpu) {
-    line(false, 'navigator.gpu 不存在', 'Chrome/Edge 113+ 或 Safari 18+;无头模式需开启 WebGPU 相关 flag');
+    line(false, 'navigator.gpu missing', 'Needs Chrome/Edge 113+ or Safari 18+; enable WebGPU flags in headless mode');
     return;
   }
-  line(true, 'navigator.gpu 存在');
+  line(true, 'navigator.gpu present');
 
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) {
-    line(false, 'requestAdapter() 返回 null', '检查 GPU 驱动与浏览器硬件加速设置;远程桌面/虚拟机可能无 GPU');
+    line(false, 'requestAdapter() returned null', 'Check GPU driver / hardware acceleration; remote desktop or VMs may lack GPU');
     return;
   }
   const info = adapter.info;
-  line(true, 'adapter 获取成功', [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(' / ') || 'unknown');
+  line(true, 'Adapter acquired', [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(' / ') || 'unknown');
 
   try {
     const device = await adapter.requestDevice();
-    line(true, 'device 获取成功', `最大缓冲 ${device.limits.maxStorageBufferBindingSize / 1024 / 1024} MB`);
+    line(true, 'Device acquired', `最大缓冲 ${device.limits.maxStorageBufferBindingSize / 1024 / 1024} MB`);
     device.destroy();
   } catch (e) {
-    line(false, 'device 获取失败', String((e as Error).message ?? e));
+    line(false, 'Device request failed', String((e as Error).message ?? e));
     return;
   }
 
-  line(true, '结论:环境可用', '去玩 playground → index.html');
+  line(true, 'Environment OK', 'Open index.html to run the playground');
 }
 
 main()
-  .catch((e) => line(false, '检测流程异常', String((e as Error).message ?? e)))
+  .catch((e) => line(false, 'Check flow error', String((e as Error).message ?? e)))
   .finally(() => {
     (window as unknown as { __done: boolean }).__done = true;
     console.log('[RESULT]', JSON.stringify(results));
