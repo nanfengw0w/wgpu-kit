@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wgpu-kit playground · 粒子生命</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <canvas id="cv"></canvas>
+  <div id="hud">
+    <div class="row title">wgpu-kit <span>playground</span></div>
+    <div class="row">
+      <label>预设 <select id="preset">
+        <option value="cells">cells · 细胞</option>
+        <option value="snakes">snakes · 蛇群</option>
+        <option value="orbitals">orbitals · 轨道</option>
+        <option value="viruses">viruses · 病毒</option>
+        <option value="random">random · 随机宇宙</option>
+      </select></label>
+      <label>算法 <select id="mode">
+        <option value="grid">grid · 10万+</option>
+        <option value="tiled">tiled</option>
+        <option value="n2">n2</option>
+      </select></label>
+    </div>
+    <div class="row">
+      <label>粒子 <input id="count" type="range" min="2000" max="200000" step="2000" value="16000" /><span id="countLabel"></span></label>
+    </div>
+    <div class="row">
+      <label>种子 <input id="seed" type="text" value="wgpu-kit" spellcheck="false" /></label>
+      <label>着色 <select id="color">
+        <option value="species">物种</option>
+        <option value="velocity">速度</option>
+      </select></label>
+    </div>
+    <div class="row btns">
+      <button id="random" title="随机一个宇宙">🎲 随机宇宙</button>
+      <button id="apply">应用</button>
+      <button id="copy" title="复制可分享链接">🔗 复制链接</button>
+    </div>
+    <div class="row btns">
+      <button id="record" title="录制画布为视频(mp4/webm)">⏺ 录制</button>
+      <button id="fav" title="收藏到本地画廊">⭐ 收藏</button>
+      <button id="toggleMatrix" title="可视化编辑 4×4 力矩阵">🎯 力矩阵</button>
+      <a id="galleryLink" href="./gallery.html">🖼 画廊</a>
+    </div>
+    <div id="matrix" class="hidden">
+      <div class="mgrid" id="mgrid"></div>
+      <div class="mhint">行=施加者 列=承受者 · 拖动改(上↑吸引/下↓排斥) · 双击归零 · 即时生效</div>
+    </div>
+    <div class="row stats" id="stats"></div>
+  </div>
+  <div id="toast"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

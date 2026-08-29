@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>wgpu-kit · 宇宙画廊</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; background: #05070c; color: #cdd6e4; font: 14px/1.6 ui-monospace, Consolas, monospace; }
+    header { padding: 28px 32px 8px; }
+    header h1 { margin: 0; font-size: 22px; color: #fff; }
+    header h1 span { color: #7ea2ff; font-weight: 400; }
+    header p { color: #8fa3c4; margin: 6px 0 0; }
+    main { padding: 16px 32px 48px; }
+    h2 { font-size: 15px; color: #a9c1ff; margin: 26px 0 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    .card {
+      display: block; background: #0d1420; border: 1px solid #26314a; border-radius: 10px;
+      padding: 14px; text-decoration: none; color: #cdd6e4; transition: border-color .15s, transform .15s;
+    }
+    .card:hover { border-color: #4b6bb0; transform: translateY(-2px); }
+    .card b { color: #fff; display: block; margin-bottom: 4px; }
+    .card span { color: #8fa3c4; font-size: 12px; word-break: break-all; }
+    .card .del {
+      float: right; color: #ff7a6b; cursor: pointer; border: none; background: none; font: inherit;
+    }
+    .import { display: flex; gap: 8px; margin-top: 10px; }
+    .import input {
+      flex: 1; background: #0d1420; border: 1px solid #26314a; border-radius: 6px;
+      color: #cdd6e4; padding: 8px 10px; font: inherit;
+    }
+    .import button, .back {
+      background: #16233c; color: #cdd6e4; border: 1px solid #2c3d63; border-radius: 6px;
+      padding: 8px 14px; font: inherit; cursor: pointer; text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>wgpu-kit <span>宇宙画廊</span></h1>
+    <p>每个链接都是一个可复现的宇宙:精选 + 你收藏的。点开即玩,🔗 复制链接去分享。</p>
+    <p><a class="back" href="./index.html">← 回 playground</a></p>
+  </header>
+  <main>
+    <h2>精选</h2>
+    <div class="grid" id="curated"></div>
+    <h2>我的收藏(localStorage)</h2>
+    <div class="import">
+      <input id="paste" placeholder="粘贴别人分享的链接导入…" spellcheck="false" />
+      <button id="importBtn">导入</button>
+    </div>
+    <div class="grid" id="fav"></div>
+  </main>
+  <script type="module" src="./gallery.ts"></script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>wgpu-kit life · 人工生命合集</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #05070c; }
+    canvas { width: 100vw; height: 100vh; display: block; }
+    #hud {
+      position: fixed; left: 12px; top: 12px; padding: 10px 14px;
+      background: rgba(10, 14, 22, 0.85); border: 1px solid rgba(120,150,200,.18); border-radius: 10px;
+      color: #cdd6e4; font: 12px/1.7 ui-monospace, Consolas, monospace;
+    }
+    #hud b { color: #fff; font-size: 13px; }
+    select, button {
+      background: #16233c; color: #cdd6e4; border: 1px solid #2c3d63; border-radius: 6px;
+      padding: 4px 8px; font: inherit; cursor: pointer;
+    }
+    #stats { color: #8fa3c4; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <canvas id="cv"></canvas>
+  <div id="hud">
+    <b>wgpu-kit life</b><br/>
+    <select id="sim">
+      <option value="turing">图灵斑图 · 珊瑚</option>
+      <option value="physarum">粘菌 · 菌丝网络</option>
+      <option value="boids">Boids · 鸟群</option>
+      <option value="tentacles">软体触手 · 水母群</option>
+    </select>
+    <button id="reload">重开</button>
+    <button id="sprinkle" title="图灵专属:撒扰动">撒扰动</button>
+    <div id="stats"></div>
+  </div>
+  <script type="module" src="./life.ts"></script>
+</body>
+</html>

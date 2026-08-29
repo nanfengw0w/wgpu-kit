@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>wgpu-kit react · &lt;ParticleCanvas/&gt;</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #05070c; color: #cdd6e4; font: 13px/1.6 ui-monospace, Consolas, monospace; }
+    #app { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
+    header, footer { padding: 12px 18px; }
+    header b { color: #fff; font-size: 15px; }
+    header span { color: #7ea2ff; }
+    #stage { position: relative; min-height: 0; }
+    #stage canvas { position: absolute; inset: 0; }
+    footer { color: #8fa3c4; }
+    footer b { color: #a9c1ff; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header><b>&lt;ParticleCanvas /&gt;</b> <span>React 绑定演示 · 66,000 粒子</span></header>
+    <div id="stage"></div>
+    <footer id="stats">初始化中……</footer>
+  </div>
+  <script type="module" src="./react-demo.tsx"></script>
+</body>
+</html>
