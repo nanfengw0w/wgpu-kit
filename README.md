@@ -16,7 +16,7 @@ npm i wgpu-kit
 **100,000 particles in 5 lines:**
 
 ```ts
-import { particles } from 'wgpu-kit';
+import { particles } from 'wgpu-kit';  // 或 'wgpu-kit/particles'
 
 const sim = await particles({ count: 100_000, forces: 'cells' });
 await sim.attach(canvas);
