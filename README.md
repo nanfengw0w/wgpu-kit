@@ -5,7 +5,9 @@ Browser GPGPU middleware: all the WebGPU boilerplate, wrapped into two simple AP
 
 [**API Reference**](docs/API.md) · Changelog: see [GitHub releases](https://github.com/nanfengw0w/wgpu-kit/releases)
 
-![playground](screenshot.png)
+**[LIVE DEMO](https://nanfengw0w.github.io/wgpu-kit/)** — runs in your browser, nothing to install.
+
+![wgpu-kit particle life](docs/assets/hero.gif)
 
 ## Quick start
 
@@ -61,6 +63,10 @@ dispatch, readbacks, error line-mapping — all handled by the library.
 | `wgpu-kit/three` | three.js snapshot interop |
 | `wgpu-kit/media` | canvas recording (webm/mp4) |
 | `wgpu-kit/vite` | WGSL kernel hot reload |
+
+![life quartet](docs/assets/life-quartet.png)
+
+*The life pack: Turing patterns / Physarum / Boids / Tentacles — [open the demo](https://nanfengw0w.github.io/wgpu-kit/life.html).*
 
 ## Numbers (reproducible)
 

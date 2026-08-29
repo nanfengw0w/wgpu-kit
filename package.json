@@ -84,10 +84,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/你的用户名/wgpu-kit.git"
+    "url": "git+https://github.com/nanfengw0w/wgpu-kit.git"
   },
   "bugs": {
-    "url": "https://github.com/你的用户名/wgpu-kit/issues"
+    "url": "https://github.com/nanfengw0w/wgpu-kit/issues"
   },
-  "homepage": "https://github.com/你的用户名/wgpu-kit#readme"
+  "homepage": "https://github.com/nanfengw0w/wgpu-kit#readme"
 }
