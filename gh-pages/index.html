@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wgpu-kit playground</title>
+  <script type="module" crossorigin src="./assets/index-BUdsoRjm.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/modulepreload-polyfill-B5Qt9EMX.js">
+  <link rel="modulepreload" crossorigin href="./assets/presets-KjmVxDtz.js">
+  <link rel="modulepreload" crossorigin href="./assets/index-BlIFyPRc.js">
+  <link rel="stylesheet" crossorigin href="./assets/index-C22ARSwH.css">
+</head>
+<body>
+  <canvas id="cv"></canvas>
+  <div id="hud">
+    <div class="row title">wgpu-kit <span>playground</span></div>
+    <div class="row">
+      <label>PRESET <select id="preset">
+        <option value="cells">CELLS · CLASSIC</option>
+        <option value="snakes">SNAKES</option>
+        <option value="orbitals">ORBITALS</option>
+        <option value="viruses">VIRUSES</option>
+        <option value="random">RANDOM MATRIX</option>
+      </select></label>
+      <label>MODE <select id="mode">
+        <option value="grid">GRID · 100K+</option>
+        <option value="tiled">TILED</option>
+        <option value="n2">N2</option>
+      </select></label>
+    </div>
+    <div class="row">
+      <label>PARTICLES <input id="count" type="range" min="2000" max="200000" step="2000" value="16000" /><span id="countLabel"></span></label>
+    </div>
+    <div class="row">
+      <label>SEED <input id="seed" type="text" value="wgpu-kit" spellcheck="false" /></label>
+      <label>COLOR <select id="color">
+        <option value="species">SPECIES</option>
+        <option value="velocity">VELOCITY</option>
+      </select></label>
+    </div>
+    <div class="row btns">
+      <button id="random" title="Roll a random preset + seed">SHUFFLE</button>
+      <button id="apply">APPLY</button>
+      <button id="copy" title="Copy shareable link">COPY LINK</button>
+    </div>
+    <div class="row btns">
+      <button id="record" title="Record canvas to video (webm/mp4)">REC</button>
+      <button id="fav" title="Save to local gallery">STAR</button>
+      <button id="toggleMatrix" title="Edit 4x4 force matrix">MATRIX</button>
+      <a id="galleryLink" href="./gallery.html">GALLERY</a>
+    </div>
+    <div id="matrix" class="hidden">
+      <div class="mgrid" id="mgrid"></div>
+      <div class="mhint">row = actor, col = target. drag to set (up = attract, down = repel). double-click to zero. live.</div>
+    </div>
+    <div class="row stats" id="stats"></div>
+  </div>
+  <div id="toast"></div>
+</body>
+</html>

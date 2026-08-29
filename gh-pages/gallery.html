@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>wgpu-kit gallery</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; background: #0a0b0d; color: #d6d7da; font: 13px/1.7 ui-monospace, Consolas, monospace; }
+    header { padding: 32px 36px 10px; }
+    header h1 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #fff; }
+    header h1 span { color: #7d8089; font-weight: 400; }
+    header p { color: #7d8089; margin: 8px 0 0; font-size: 12px; }
+    main { padding: 12px 36px 56px; }
+    h2 { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #7d8089; margin: 28px 0 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+    .card {
+      display: block; background: #101114; border: 1px solid #26282e;
+      padding: 13px 15px; text-decoration: none; color: #d6d7da; transition: border-color 0.15s;
+    }
+    .card:hover { border-color: #3fbf9f; }
+    .card b { display: block; margin-bottom: 3px; font-weight: 600; letter-spacing: 0.04em; }
+    .card span { color: #7d8089; font-size: 11px; word-break: break-all; }
+    .card .del { float: right; color: #7d8089; cursor: pointer; border: none; background: none; font: inherit; }
+    .card .del:hover { color: #e06c60; }
+    .import { display: flex; gap: 8px; margin-top: 10px; }
+    .import input {
+      flex: 1; background: #101114; border: 1px solid #26282e;
+      color: #d6d7da; padding: 8px 10px; font: inherit;
+    }
+    .import input:focus { outline: none; border-color: #3fbf9f; }
+    .import button, .back {
+      background: transparent; color: #d6d7da; border: 1px solid #26282e;
+      padding: 8px 14px; font: inherit; cursor: pointer; text-decoration: none;
+      letter-spacing: 0.05em; text-transform: uppercase; font-size: 11px;
+    }
+    .import button:hover, .back:hover { border-color: #3fbf9f; color: #3fbf9f; }
+  </style>
+  <script type="module" crossorigin src="./assets/gallery-CgDIWk2t.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/modulepreload-polyfill-B5Qt9EMX.js">
+</head>
+<body>
+  <header>
+    <h1>wgpu-kit <span>gallery</span></h1>
+    <p>Every link is a reproducible universe. Click to open. STAR in the playground saves it here; paste a shared link to import.</p>
+    <p><a class="back" href="./index.html">&larr; PLAYGROUND</a></p>
+  </header>
+  <main>
+    <h2>Curated</h2>
+    <div class="grid" id="curated"></div>
+    <h2>Starred (localStorage)</h2>
+    <div class="import">
+      <input id="paste" placeholder="Paste a shared universe link to import&hellip;" spellcheck="false" />
+      <button id="importBtn">IMPORT</button>
+    </div>
+    <div class="grid" id="fav"></div>
+  </main>
+</body>
+</html>

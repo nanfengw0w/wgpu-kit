@@ -80,7 +80,10 @@ function serve(root, port) {
       res.writeHead(404); res.end('not found');
     }
   });
-  return new Promise((ok) => server.listen(port, '127.0.0.1', () => ok(server)));
+  return new Promise((ok) => {
+    server.on('error', () => ok(server)); // 端口被占(如同根服务器已运行)时静默复用
+    server.listen(port, '127.0.0.1', () => ok(server));
+  });
 }
 
 const GPU_ARGS = ['--enable-unsafe-webgpu', '--hide-scrollbars', '--window-size=1280,800'];
@@ -266,7 +269,7 @@ function runStderr(url, { timeout, screenshot }) {
 }
 
 await mkdir(join(ROOT, 'docs/validation/results'), { recursive: true });
-const server = await serve(ROOT, PORT);
+const server = await serve(ROOT, PORT); // 可能复用已有同根服务器
 const all = [];
 for (const p of pages) {
   const url = p.startsWith('http://') || p.startsWith('https://') ? p : `http://127.0.0.1:${PORT}/${p.replace(/^\//, '')}`;
@@ -285,7 +288,7 @@ for (const p of pages) {
   if (screenshot) console.log(`  → 截图 ${screenshot}`);
   await writeFile(join(ROOT, `docs/validation/results/${slug}.json`), JSON.stringify({ ...all.at(-1), browser: BROWSER }, null, 2));
 }
-server.close();
+try { server?.close(); } catch { /* noop */ }
 const failed = all.flatMap((a) => a.results).filter((r) => !r.pass).length;
 const ran = all.flatMap((a) => a.results).length;
 console.log(`\n[verify] 总计 ${ran - failed}/${ran} 通过 → ${failed === 0 && ran > 0 ? 'OK' : 'FAILED'}`);
