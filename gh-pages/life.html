@@ -1,39 +1,52 @@
 <!doctype html>
-<html lang="zh">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>wgpu-kit life</title>
   <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #05070c; }
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0b0d; }
     canvas { width: 100vw; height: 100vh; display: block; }
     #hud {
-      position: fixed; left: 12px; top: 12px; padding: 10px 14px;
-      background: rgba(10, 14, 22, 0.85); border: 1px solid rgba(120,150,200,.18); border-radius: 10px;
-      color: #cdd6e4; font: 12px/1.7 ui-monospace, Consolas, monospace;
+      position: fixed; left: 16px; top: 16px; width: 268px;
+      background: rgba(16, 17, 20, 0.94); border: 1px solid #26282e;
+      padding: 14px 16px; color: #d6d7da; font: 12px/1.7 ui-monospace, Consolas, monospace;
+      user-select: none;
     }
-    #hud b { color: #fff; font-size: 13px; }
+    #hud b { color: #fff; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; }
+    #hud .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+    #hud label { color: #7d8089; font-size: 11px; display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+    #hud input[type="range"] { flex: 1; min-width: 72px; accent-color: #3fbf9f; height: 2px; }
     select, button {
-      background: #16233c; color: #cdd6e4; border: 1px solid #2c3d63; border-radius: 6px;
-      padding: 4px 8px; font: inherit; cursor: pointer;
+      background: #101114; color: #d6d7da; border: 1px solid #26282e;
+      padding: 4px 8px; font: inherit; font-size: 11px; cursor: pointer;
+      letter-spacing: 0.05em; text-transform: uppercase;
     }
-    #stats { color: #8fa3c4; margin-top: 4px; }
+    select:hover, button:hover { border-color: #3fbf9f; color: #3fbf9f; }
+    #stats { color: #7d8089; border-top: 1px solid #26282e; padding-top: 8px; margin-top: 8px; font-size: 11px; }
+    #stats b { color: #3fbf9f; font-weight: 600; }
   </style>
-  <script type="module" crossorigin src="./assets/life-pR6Rhu1M.js"></script>
+  <script type="module" crossorigin src="./assets/life-hucdKVgz.js"></script>
   <link rel="modulepreload" crossorigin href="./assets/modulepreload-polyfill-B5Qt9EMX.js">
   <link rel="modulepreload" crossorigin href="./assets/presets-DEcsTrp7.js">
 </head>
 <body>
   <canvas id="cv"></canvas>
   <div id="hud">
-    <b>wgpu-kit life</b><br/>
-    <select id="sim">
-      <option value="turing">TURING · CORAL</option>
-      <option value="physarum">PHYSARUM</option>
-      <option value="boids">BOIDS</option>
-      <option value="tentacles">TENTACLES</option>
-    </select>
-    <button id="reload">RESET</button>
-    <button id="sprinkle" title="Turing: sprinkle perturbation">SPRINKLE</button>
+    <b>wgpu-kit life</b>
+    <div class="row">
+      <select id="sim">
+        <option value="turing">TURING · CORAL</option>
+        <option value="physarum">PHYSARUM</option>
+        <option value="boids">BOIDS</option>
+        <option value="tentacles">TENTACLES</option>
+      </select>
+      <button id="reload">RESET</button>
+      <button id="sprinkle" title="Turing: sprinkle perturbation">SPRINKLE</button>
+    </div>
+    <div class="row" id="birdsRow">
+      <label>BIRDS <input id="birds" type="range" min="500" max="8000" step="100" value="1200" /><span id="birdsN"></span></label>
+    </div>
     <div id="stats"></div>
   </div>
 </body>

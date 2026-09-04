@@ -5,7 +5,7 @@
 
 [![CI](https://github.com/nanfengw0w/wgpu-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/nanfengw0w/wgpu-kit/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/wgpu-kit)](https://www.npmjs.com/package/wgpu-kit) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-English: [README.md](README.md) · [API 参考(中文)](docs/API.zh-CN.md) · [API Reference (English)](docs/API.md) · **[在线演示](https://nanfengw0w.github.io/wgpu-kit/)**
+English: [README.md](README.md) · [API 参考(中文)](docs/API.zh-CN.md) · [API 参考(中文)](docs/API.zh-CN.md) · [API Reference (English)](docs/API.md) · **[在线演示](https://nanfengw0w.github.io/wgpu-kit/)**
 
 ![wgpu-kit particle life](hero.gif)
 

@@ -5,7 +5,7 @@ All the WebGPU boilerplate — device, buffers, pipelines, dispatch, readbacks �
 
 [![CI](https://github.com/nanfengw0w/wgpu-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/nanfengw0w/wgpu-kit/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/wgpu-kit)](https://www.npmjs.com/package/wgpu-kit) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[**API Reference**](docs/API.md) · [中文文档](README.zh-CN.md) · **[LIVE DEMO](https://nanfengw0w.github.io/wgpu-kit/)** · Changelog: [releases](https://github.com/nanfengw0w/wgpu-kit/releases)
+[**API Reference**](docs/API.md) · [中文文档](README.cn.md) · **[LIVE DEMO](https://nanfengw0w.github.io/wgpu-kit/)** · Changelog: [releases](https://github.com/nanfengw0w/wgpu-kit/releases)
 
 ![wgpu-kit particle life](hero.gif)
 
