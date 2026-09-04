@@ -4,7 +4,7 @@
 > 浏览器 GPGPU 中间层:WebGPU 计算的全套样板,打包成两层简单 API。
 
 **状态:公测就绪(v0.9.5)· 演示:[playground](playground/index.html) · [生命合集](playground/life.html) · [画廊](playground/gallery.html)**
- · **[API 参考(学习文档)](docs/API.md)** · **[文件结构](docs/STRUCTURE.md)** · [基准](docs/benchmarks.md) · API 设计 · 验证日志 · 路线图 · [CHANGELOG](CHANGELOG.md)
+ · **[API 参考(中文)](docs/API.zh-CN.md)** · [API Reference (English)](docs/API.md)
 
 ## Quick start
 
@@ -69,11 +69,11 @@ await integrate.run({ pos, vel }, { dt: 0.02 });
 | 邻域算法对比 | grid 比 O(N²) tiling 快 **6.7×**@16k,近似 O(N) | 同会话基准 |
 | 库体积 | core gzip **5.34 kB**;+particles **10.27 kB** | gzip -c |
 
-完整数据与复现命令:开发仓库 benchmarks.md。基准方法学(含两次自我纠错)见验证日志 05。
+完整基准数据与复现命令:[docs/benchmarks.md](docs/benchmarks.md)。
 
 ## 为什么
 
-浏览器里用 GPU,今天只有四条路:纯 JS(慢)、裸写 WebGPU(~150 行仪式代码)、three.js TSL(锁引擎)、gpu.js(WebGL 时代,停滞)。"**简单 + 快 + 引擎无关**"的专用 WebGPU 计算库是空位。完整竞品分析:docs/research.md。
+浏览器里用 GPU,今天只有四条路:纯 JS(慢)、裸写 WebGPU(~150 行仪式代码)、three.js TSL(锁引擎)、gpu.js(WebGL 时代,停滞)。"**简单 + 快 + 引擎无关**"的专用 WebGPU 计算库是空位。
 
 ## 三条设计铁律
 
