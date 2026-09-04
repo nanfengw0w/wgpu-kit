@@ -12,6 +12,8 @@ const params = new URLSearchParams(location.search);
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const simSel = $<HTMLSelectElement>('sim');
 const stats = $<HTMLElement>('stats');
+const birdsInput = $<HTMLInputElement>('birds');
+const birdsLabel = $<HTMLElement>('birdsN');
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
 (window as unknown as { __results: unknown }).__results = results;
@@ -26,18 +28,23 @@ async function rebuild() {
   const canvas = $<HTMLCanvasElement>('cv');
   if (kind === 'turing') sim = await turing({ preset: 'coral', seed: 'life' });
   else if (kind === 'physarum') sim = await physarum({ agents: 100_000, seed: 'life' });
-  else if (kind === 'boids') sim = await boids({ count: 3000, seed: 'life' });
+  else if (kind === 'boids') sim = await boids({ count: Number(birdsInput.value), seed: 'life' });
   else sim = await tentacles({ chains: 48 });
   await sim.attach(canvas);
 }
 
-simSel.onchange = () => { void rebuild(); };
+simSel.onchange = () => { syncBirdsRow(); void rebuild(); };
 $('reload').onclick = () => { void rebuild(); };
+const syncBirdsRow = () => { ($('birdsRow') as HTMLElement).style.display = kind === 'boids' ? '' : 'none'; };
+birdsInput.oninput = () => { birdsLabel.textContent = Number(birdsInput.value).toLocaleString(); };
+birdsInput.onchange = () => { if (kind === 'boids') void rebuild(); };
 $('sprinkle').onclick = () => { if (kind === 'turing') (sim as TuringSim).sprinkle(8); };
 
 // —— 启动 ——
 try {
   simSel.value = kind;
+  syncBirdsRow();
+  birdsLabel.textContent = Number(birdsInput.value).toLocaleString();
   await rebuild();
   report('life-boot', true, kind);
 } catch (e) {

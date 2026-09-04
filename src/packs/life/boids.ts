@@ -31,7 +31,7 @@ const WG = 64;
 
 export async function boids(config: BoidsConfig = {}): Promise<BoidsSim> {
   const {
-    count: N = 3000, perception = 0.05, maxSpeed = 0.012,
+    count: N = 1200, perception = 0.05, maxSpeed = 0.012,
     wSep = 1.6, wAli = 1.0, wCoh = 0.8, size = 0.009,
     seed = 'boids',
   } = config;
