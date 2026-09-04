@@ -75,6 +75,13 @@ dispatch, readbacks, error line-mapping — all handled by the library.
 | neighborhood algorithms | grid ~O(N); 8.5× faster than brute force at 66k | same-session A/B |
 | bundle size | core gzip 5.5kB; +particles 10.3kB | gzip |
 
+## Verification
+
+41+ automated probes run on a real GPU via a headless Chromium harness
+(included under `tests/` + `scripts/verify.mjs`) — including a physics
+equivalence regression that fails if the neighborhood algorithms ever
+produce divergent structures.
+
 ## Three design rules
 
 1. **Level-2 works in 5 minutes, level-1 has no ceiling** — `rawKernel` and
