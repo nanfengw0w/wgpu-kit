@@ -69,7 +69,7 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
     matrix.write(new Float32Array(cfg.forces));
   }
 
-  const phys: UniformState = { rMax: cfg.rMax, beta: cfg.beta, forceFactor: cfg.forceFactor, frictionHalfLife: 0.04, dt: cfg.dt };
+  const phys: UniformState = { rMax: cfg.rMax, beta: cfg.beta, forceFactor: cfg.forceFactor, frictionHalfLife: cfg.frictionHalfLife, dt: cfg.dt };
 
   const uniform = device.createBuffer({ size: USIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: 'particles-params' });
 
@@ -115,15 +115,22 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
   // —— grid:4 kernel 流水线 ——
   interface GridState {
     size: number;
-    count: Buffer; start: Buffer; fill: Buffer; order: Buffer; partial: Buffer; sortedPos: Buffer; sortedSp: Buffer;
+    count: Buffer; start: Buffer; fill: Buffer; order: Buffer; partial: Buffer; sortedPos: Buffer; sortedSp: Buffer; blockSums: Buffer;
     pCounts: GPUComputePipeline; pScan: GPUComputePipeline; pScatter: GPUComputePipeline; pForceCell: GPUComputePipeline; pForceInt: GPUComputePipeline;
     bgCountsA: GPUBindGroup; bgCountsB: GPUBindGroup;
     bgScan: GPUBindGroup;
     bgScatterA: GPUBindGroup; bgScatterB: GPUBindGroup;
     bgForceCellAB: GPUBindGroup; bgForceCellBA: GPUBindGroup;
     bgIntegrateAB: GPUBindGroup; bgIntegrateBA: GPUBindGroup;
+    bgForceCellRebuild: (readPos: Buffer) => void;
   }
   let grid: GridState | null = null;
+  let gridBuildVersion = 0;
+  let gridBindGroupsDirty = false;
+  const gridDestroy = (g: GridState) => {
+    g.count.destroy(); g.start.destroy(); g.fill.destroy(); g.order.destroy();
+    g.partial.destroy(); g.sortedPos.destroy(); g.sortedSp.destroy(); g.blockSums.destroy();
+  };
 
   const buildGrid = async (size: number): Promise<GridState> => {
     const cells = size * size;
@@ -143,6 +150,7 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
     const pForceCell = await makePipeline(mForce, 'main_force_cell', 'grid-force-cell');
     const pForceInt = await makePipeline(mForce, 'main_force_integrate', 'grid-force-integrate');
     const partial = await Buffer.create('vec2f', cfg.count * 9); // (粒子 × 3×3 格) 部分力
+    const blockSums = await Buffer.create('u32', Math.ceil(cells / 256)); // 二级扫描块和
     const sortedPos = await Buffer.create('vec2f', cfg.count);   // 按格子序重排的副本(合并访问)
     const sortedSp = await Buffer.create('u32', cfg.count);
 
@@ -161,6 +169,7 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         { binding: 1, resource: { buffer: count.gpuBuffer } },
         { binding: 2, resource: { buffer: start.gpuBuffer } },
         { binding: 3, resource: { buffer: fill.gpuBuffer } },
+        { binding: 4, resource: { buffer: blockSums.gpuBuffer } },
       ],
     });
     const bgScatter = (readPos: Buffer) => device.createBindGroup({
@@ -204,16 +213,23 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
       ],
     });
 
-    return {
+    const rebuildForceCellBG = (readPos: Buffer) => {
+      const otherPos = readPos === sideA.pos ? sideB.pos : sideA.pos;
+      state.bgForceCellAB = bgForceCell(readPos);
+      state.bgForceCellBA = bgForceCell(otherPos);
+    };
+    const state = {
       size,
-      count, start, fill, order, partial, sortedPos, sortedSp,
+      count, start, fill, order, partial, sortedPos, sortedSp, blockSums,
       pCounts, pScan, pScatter, pForceCell, pForceInt,
       bgCountsA: bgCounts(sideA.pos), bgCountsB: bgCounts(sideB.pos),
       bgScan,
       bgScatterA: bgScatter(sideA.pos), bgScatterB: bgScatter(sideB.pos),
       bgForceCellAB: bgForceCell(sideA.pos), bgForceCellBA: bgForceCell(sideB.pos),
       bgIntegrateAB: bgIntegrate(sideA, sideB), bgIntegrateBA: bgIntegrate(sideB, sideA),
+      bgForceCellRebuild: rebuildForceCellBG,
     };
+    return state;
   };
 
   if (cfg.mode === 'grid') grid = await buildGrid(gridSize);
@@ -272,12 +288,18 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
       const useAB = frame % 2 === 0;
       const read = useAB ? sideA : sideB;
 
+      if (gridBindGroupsDirty && grid) {
+        grid.bgForceCellRebuild(sideA.pos);
+        gridBindGroupsDirty = false;
+      }
       const enc = device.createCommandEncoder();
       const pass = enc.beginComputePass();
       if (grid) {
         // 实测:同一 compute pass 内连续 dispatch 之间,后续 kernel 读到的可能
         // 是前一 kernel 的旧数据(Dawn/Windows,partial 竞态)——各段独立 pass
         // 提交以保证可见性。
+        // 单 encoder、五个独立 pass:同一 encoder 内 pass 天然按序执行且可见,
+        // 免掉每帧 2 次额外 enc.finish()/submit(评审:提交间隔调度空隙)
         pass.setPipeline(grid.pCounts);
         pass.setBindGroup(0, useAB ? grid.bgCountsA : grid.bgCountsB);
         pass.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
@@ -288,23 +310,19 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         pass.setBindGroup(0, useAB ? grid.bgScatterA : grid.bgScatterB);
         pass.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
         pass.end();
+
+        const passB = enc.beginComputePass();
+        passB.setPipeline(grid.pForceCell);
+        passB.setBindGroup(0, useAB ? grid.bgForceCellAB : grid.bgForceCellBA);
+        passB.dispatchWorkgroups(Math.ceil((cfg.count * 9) / WORKGROUP));
+        passB.end();
+
+        const passC = enc.beginComputePass();
+        passC.setPipeline(grid.pForceInt);
+        passC.setBindGroup(0, useAB ? grid.bgIntegrateAB : grid.bgIntegrateBA);
+        passC.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
+        passC.end();
         device.queue.submit([enc.finish()]);
-
-        const enc2 = device.createCommandEncoder();
-        const pass2 = enc2.beginComputePass();
-        pass2.setPipeline(grid.pForceCell);
-        pass2.setBindGroup(0, useAB ? grid.bgForceCellAB : grid.bgForceCellBA);
-        pass2.dispatchWorkgroups(Math.ceil((cfg.count * 9) / WORKGROUP));
-        pass2.end();
-        device.queue.submit([enc2.finish()]);
-
-        const enc3 = device.createCommandEncoder();
-        const pass3 = enc3.beginComputePass();
-        pass3.setPipeline(grid.pForceInt);
-        pass3.setBindGroup(0, useAB ? grid.bgIntegrateAB : grid.bgIntegrateBA);
-        pass3.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
-        pass3.end();
-        device.queue.submit([enc3.finish()]);
       } else {
         pass.setPipeline(simPipeline!);
         pass.setBindGroup(0, useAB ? bgAB! : bgBA!);
@@ -314,7 +332,10 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
       }
 
       // 渲染刚写入的一侧(队列顺序保证 compute 先行),再翻转
-      renderer?.render((useAB ? pp.other : pp.current).pos, (useAB ? pp.other : pp.current).vel);
+      // 渲染刚写入的一侧(useAB 时写入 other;!useAB 时写入 current)——
+      // 旧代码相位错位,隔帧才显示新状态(v0.9.7 引入的回归,评审 #4)
+      const writtenSide = useAB ? pp.other : pp.current;
+      renderer?.render(writtenSide.pos, writtenSide.vel);
       pp.swap();
       frame++;
 
@@ -342,11 +363,19 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         const g = gridSizeOf(phys.rMax);
         if (g !== gridSize) {
           gridSize = g;
-          // rMax 跨档:重建 grid 缓冲与管线绑定(rMax 变化不频繁,代价可接受)
+          // 版本号 + 原子切换:重建期间旧 grid 继续服务(不再有"新 gridSize × 旧缓冲"窗口);
+          // 连续调用只有最后一次生效,被超越/被替换的 grid 统一销毁,不泄漏
+          const version = ++gridBuildVersion;
           void (async () => {
-            const old = grid!;
-            grid = await buildGrid(gridSize);
-            old.count.destroy(); old.start.destroy(); old.fill.destroy(); old.order.destroy();
+            const fresh = await buildGrid(gridSize);
+            if (version !== gridBuildVersion) {
+              gridDestroy(fresh);
+              return; // 已有更新版本的重建完成,丢弃本份
+            }
+            const old = grid;
+            grid = fresh;
+            fresh.bgForceCellRebuild(sideA.pos); // 用当前侧重建 forceCell 绑定组(AB/BA 双向齐备)
+            if (old) gridDestroy(old);
           })();
         }
       }

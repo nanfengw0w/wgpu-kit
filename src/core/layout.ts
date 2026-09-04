@@ -6,8 +6,10 @@ export type ScalarKind =
   | 'vec4f';
 
 export interface TypeDef {
-  /** 字节数 */
+  /** 字节数(uniform/标量语义) */
   readonly size: number;
+  /** **storage 数组元素步长**(WGSL 规则:array<vec3f> 步长 16,与 size 12 不同) */
+  readonly stride: number;
   /** 字节对齐(WGSL 规则:vec3 对齐到 16) */
   readonly align: number;
   /** 分量数 */
@@ -17,14 +19,14 @@ export interface TypeDef {
 }
 
 export const TYPES: Record<ScalarKind, TypeDef> = {
-  f32:   { size: 4,  align: 4,  comps: 1, typed: 'Float32Array', wgsl: 'f32' },
-  i32:   { size: 4,  align: 4,  comps: 1, typed: 'Int32Array',   wgsl: 'i32' },
-  u32:   { size: 4,  align: 4,  comps: 1, typed: 'Uint32Array',  wgsl: 'u32' },
-  vec2f: { size: 8,  align: 8,  comps: 2, typed: 'Float32Array', wgsl: 'vec2f' },
-  vec2i: { size: 8,  align: 8,  comps: 2, typed: 'Int32Array',   wgsl: 'vec2i' },
-  vec2u: { size: 8,  align: 8,  comps: 2, typed: 'Uint32Array',  wgsl: 'vec2u' },
-  vec3f: { size: 12, align: 16, comps: 3, typed: 'Float32Array', wgsl: 'vec3f' },
-  vec4f: { size: 16, align: 16, comps: 4, typed: 'Float32Array', wgsl: 'vec4f' },
+  f32:   { size: 4,  stride: 4,  align: 4,  comps: 1, typed: 'Float32Array', wgsl: 'f32' },
+  i32:   { size: 4,  stride: 4,  align: 4,  comps: 1, typed: 'Int32Array',   wgsl: 'i32' },
+  u32:   { size: 4,  stride: 4,  align: 4,  comps: 1, typed: 'Uint32Array',  wgsl: 'u32' },
+  vec2f: { size: 8,  stride: 8,  align: 8,  comps: 2, typed: 'Float32Array', wgsl: 'vec2f' },
+  vec2i: { size: 8,  stride: 8,  align: 8,  comps: 2, typed: 'Int32Array',   wgsl: 'vec2i' },
+  vec2u: { size: 8,  stride: 8,  align: 8,  comps: 2, typed: 'Uint32Array',  wgsl: 'vec2u' },
+  vec3f: { size: 12, stride: 16, align: 16, comps: 3, typed: 'Float32Array', wgsl: 'vec3f' },
+  vec4f: { size: 16, stride: 16, align: 16, comps: 4, typed: 'Float32Array', wgsl: 'vec4f' },
 };
 
 export function alignTo(offset: number, align: number): number {
@@ -83,4 +85,21 @@ export function packUniform(layout: UniformLayout, values: Readonly<Record<strin
     pack(view, f.offset, v);
   }
   return buf;
+}
+
+/** packUniform 的零分配变体:写入调用方提供的缓冲(每帧路径用,避免 new ArrayBuffer) */
+export function packUniformInto(target: ArrayBuffer, layout: UniformLayout, values: Readonly<Record<string, number>>): void {
+  const view = new DataView(target);
+  for (const f of layout.fields) {
+    const pack = PACKERS[f.kind];
+    if (!pack) {
+      throw new Error(`uniform 字段 ${f.name} 的类型 ${f.kind} 暂不支持(当前仅支持标量)`);
+    }
+    const v = values[f.name];
+    if (v === undefined) throw new Error(`缺少 uniform 值: ${f.name}`);
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new Error(`uniform 值 ${f.name} 必须是有限数字,收到: ${String(v)}`);
+    }
+    pack(view, f.offset, v);
+  }
 }

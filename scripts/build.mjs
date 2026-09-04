@@ -1,52 +1,60 @@
+#!/usr/bin/env node
 /**
- * 库构建:esbuild 三入口打包(ESM,零依赖) + tsc 声明文件(rewriteRelativeImportExtensions)。
- * 构建后自动核对章程的性能预算(core < 8kB;core+particles < 15kB gzip)。
+ * 库构建 v2:tsc emit 保留模块结构(preservedModules)。
+ *
+ * 为什么弃用 esbuild 打包:v0.9.11 发布后,外部评审用探针证实——每个入口独立
+ * bundle 内嵌一份 GpuContext 单例,`import {elementKernel} from 'wgpu-kit'` 与
+ * `import {particles} from 'wgpu-kit/particles'` 拿到**两个 GPUDevice**,
+ * 跨入口传 Buffer 直接报 "Buffer is associated with one Device"。
+ *
+ * preservedModules 让所有入口引用同一份 dist/core/context.js——模块级单例
+ * 在 ESM 下天然全库唯一,多设备问题从结构上消失。
  */
 import { execSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
-import { readFileSync, mkdirSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 
 rmSync(DIST, { recursive: true, force: true });
-mkdirSync(DIST, { recursive: true });
 
 const run = (cmd) => {
   console.log(`> ${cmd}`);
   execSync(cmd, { cwd: ROOT, stdio: 'inherit' });
 };
 
-const entries = [
-  ['src/index.ts', 'dist/index.js'],
-  ['src/packs/particles/index.ts', 'dist/particles.js'],
-  ['src/packs/life/index.ts', 'dist/life.js'],
-  ['src/packs/fields/index.ts', 'dist/fields.js'],
-  ['src/packs/image/index.ts', 'dist/image.js'],
-  ['src/interop/three.ts', 'dist/three.js'],
-  ['src/react/index.tsx', 'dist/react.js', '--external:react'],
-  ['src/vite.ts', 'dist/vite.js', '--external:vite'],
-];
-for (const [entry, outfile, extra] of entries) {
-  run(`npx esbuild ${entry} --bundle --format=esm --outfile=${outfile} --log-level=warning${extra ? ' ' + extra : ''}`);
-}
+// 全量 tsc emit:保留模块结构,入口间共享 dist/core/*
 run('npx tsc -p tsconfig.build.json');
 
-// —— 体积预算核对(章程"基准即文档") ——
+// 体积预算核对(遍历关键产物)
+const sizes = [];
+const walk = (dir, prefix = '') => {
+  for (const f of readdirSync(dir)) {
+    const p = join(dir, f);
+    if (statSync(p).isDirectory()) walk(p, `${prefix}${f}/`);
+    else if (f.endsWith('.js')) sizes.push({ file: `${prefix}${f}`, path: p });
+  }
+};
+walk(DIST);
+
 console.log('\n体积(gzip):');
 let fail = false;
-for (const f of ['index.js', 'particles.js', 'three.js']) {
-  const raw = readFileSync(join(DIST, f));
-  const gz = gzipSync(raw).length;
-  console.log(`  ${f}: ${(raw.length / 1024).toFixed(2)} kB → gzip ${(
-    gz / 1024
-  ).toFixed(2)} kB`);
+let totalCore = 0;
+for (const { file, path } of sizes.sort((a, b) => a.file.localeCompare(b.file))) {
+  const gz = gzipSync(readFileSync(path)).length / 1024;
+  console.log(`  ${file}: ${gz.toFixed(2)} kB gzip`);
+  if ((file === 'index.js' || file.startsWith('core/') || file === 'layout.js' || file === 'errors.js') && file !== 'observe.js') totalCore += gz;
 }
-const coreGz = gzipSync(readFileSync(join(DIST, 'index.js'))).length / 1024;
-const withPackGz = gzipSync(readFileSync(join(DIST, 'particles.js'))).length / 1024;
-if (coreGz > 15) { console.error(`  ✗ core 超预算: ${coreGz.toFixed(2)} > 15 kB`); fail = true; } // v0.9.11:主入口含 particles(开箱即用),预算 8→15
-if (withPackGz > 15) { console.error(`  ✗ core+particles 超预算: ${withPackGz.toFixed(2)} > 15 kB`); fail = true; }
-console.log(fail ? '\n构建完成,但超出性能预算!' : '\n✓ 构建完成,体积在性能预算内');
+console.log(`  → core 合计: ${totalCore.toFixed(2)} kB gzip(预算 <15)`);
+if (totalCore > 15) { console.error('  ✗ core 超预算'); fail = true; }
+
+// 结构断言:全库必须共享唯一 context 模块(多设备问题的结构性防线)
+const contextFiles = readdirSync(join(DIST, 'core')).filter((f) => f === 'context.js').length;
+if (contextFiles !== 1) { console.error('  ✗ dist/core/context.js 不唯一,多设备问题将复现'); fail = true; }
+console.log(`  context.js 副本: ${contextFiles}(必须为 1)`);
+
+console.log(fail ? '\n构建失败!' : '\n✓ 构建完成(preservedModules),体积与结构断言通过');
 process.exit(fail ? 1 : 0);

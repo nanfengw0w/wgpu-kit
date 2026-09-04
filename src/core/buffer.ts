@@ -21,6 +21,7 @@ export class Buffer<K extends ScalarKind = ScalarKind> {
 
   #ctx: GpuContext;
   #byteLength: number;
+  #stride: number;
   #staging: GPUBuffer | null = null;
 
   private constructor(ctx: GpuContext, kind: K, length: number, gpuBuffer: GPUBuffer) {
@@ -28,7 +29,8 @@ export class Buffer<K extends ScalarKind = ScalarKind> {
     this.kind = kind;
     this.length = length;
     this.gpuBuffer = gpuBuffer;
-    this.#byteLength = length * TYPES[kind].size;
+    this.#byteLength = length * TYPES[kind].stride;
+    this.#stride = TYPES[kind].stride;
   }
 
   static async create<K extends ScalarKind>(kind: K, length: number): Promise<Buffer<K>> {
@@ -39,24 +41,36 @@ export class Buffer<K extends ScalarKind = ScalarKind> {
     if (!def) throw new UsageError(`未知类型 "${String(kind)}",可用: ${Object.keys(TYPES).join(', ')}`);
     const ctx = await GpuContext.get();
     const gpuBuffer = ctx.device.createBuffer({
-      size: length * def.size,
+      size: length * def.stride,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
       label: `wgpu-kit Buffer<${kind}>[${length}]`,
     });
     return new Buffer<K>(ctx, kind, length, gpuBuffer);
   }
 
-  /** 校验并写入(CPU → GPU) */
+  /** 校验并写入(CPU → GPU);vec3f 等 stride≠size 的类型自动补 padding */
   write(data: NumArray): void {
-    const ctor = TYPED_CTORS[TYPES[this.kind].typed];
+    const def = TYPES[this.kind];
+    const ctor = TYPED_CTORS[def.typed];
     if (!(data instanceof ctor)) {
-      throw new UsageError(`Buffer<${this.kind}>.write 需要 ${TYPES[this.kind].typed},收到 ${data.constructor?.name ?? typeof data}`);
+      throw new UsageError(`Buffer<${this.kind}>.write 需要 ${def.typed},收到 ${data.constructor?.name ?? typeof data}`);
     }
-    const expected = this.length * TYPES[this.kind].comps;
+    const expected = this.length * def.comps;
     if (data.length !== expected) {
       throw new UsageError(`Buffer<${this.kind}>[${this.length}].write 需要 ${expected} 个分量,收到 ${data.length}`);
     }
-    this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, data);
+    if (def.stride === def.size || def.comps === 1) {
+      this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, data);
+      return;
+    }
+    // stride ≠ size(vec3f):逐元素补 padding 到 GPU 布局
+    const comps = def.comps;
+    const per = def.stride / 4;
+    const gpu = new Float32Array(this.length * per);
+    for (let i = 0; i < this.length; i++) {
+      for (let c = 0; c < comps; c++) gpu[i * per + c] = data[i * comps + c]!;
+    }
+    this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, gpu);
   }
 
   /** GPU → CPU:内部 staging buffer + mapAsync,mapAsync 的异步陷阱由库承担 */
@@ -75,9 +89,20 @@ export class Buffer<K extends ScalarKind = ScalarKind> {
     await this.#staging.mapAsync(GPUMapMode.READ);
     const ab = this.#staging.getMappedRange().slice(0);
     this.#staging.unmap();
-    if (def.typed === 'Float32Array') return new Float32Array(ab);
-    if (def.typed === 'Int32Array') return new Int32Array(ab);
-    return new Uint32Array(ab);
+    if (def.stride === def.size || def.comps === 1) {
+      if (def.typed === 'Float32Array') return new Float32Array(ab);
+      if (def.typed === 'Int32Array') return new Int32Array(ab);
+      return new Uint32Array(ab);
+    }
+    // stride ≠ size(vec3f):剥掉 GPU 布局的 padding
+    const comps = def.comps;
+    const per = def.stride / 4;
+    const src = new Float32Array(ab);
+    const out = new Float32Array(this.length * comps);
+    for (let i = 0; i < this.length; i++) {
+      for (let c = 0; c < comps; c++) out[i * comps + c] = src[i * per + c]!;
+    }
+    return out;
   }
 
   destroy(): void {

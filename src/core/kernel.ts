@@ -1,4 +1,4 @@
-import { planUniform, packUniform, TYPES, type ScalarKind, type UniformLayout } from './layout.ts';
+import { planUniform, packUniformInto, TYPES, type ScalarKind, type UniformLayout } from './layout.ts';
 import { GpuContext } from './context.ts';
 import { Buffer } from './buffer.ts';
 import { CompileError, UsageError } from './errors.ts';
@@ -128,8 +128,17 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
   let userCodeLineOffset = first.userCodeLineOffset;
   const uniformBufferName = `${normalized.name}:uniform`;
 
+  // 构造期预展开:稳态 run() 每帧零分配(评审:两次展开 + O(字段²) find + 字符串 key)
+  const orderedFields: Array<{ key: string; kind: ScalarKind }> = [
+    ...normalized.state.map(([k, t]) => ({ key: k, kind: t })),
+    ...normalized.inputs.map(([k, t]) => ({ key: k, kind: t })),
+  ];
+  const expectedKinds = new Map(orderedFields.map((f) => [f.key, f.kind] as const));
+  const sharedPack = new ArrayBuffer(uniformLayout.size); // 复用打包缓冲(writeBuffer 会拷贝)
+
   let pipelinePromise: Promise<GPUComputePipeline> | null = null;
-  const bindGroupCache = new Map<string, GPUBindGroup>();
+  let cachedCtx: GpuContext | null = null; // 首帧后缓存为普通引用
+  const bindGroupCache = new Map<number, GPUBindGroup>();
   let uniformBuffer: GPUBuffer | null = null;
 
   const compilePipeline = async (): Promise<GPUComputePipeline> => {
@@ -181,30 +190,31 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
     },
 
     async run(resources: Record<string, Buffer>, uniforms: Record<string, number> = {}): Promise<void> {
-      const ctx = await GpuContext.get();
-      const device = ctx.device;
+      if (!cachedCtx) cachedCtx = await GpuContext.get();
+      const device = cachedCtx.device;
       const pipeline = await getPipeline();
 
-      // —— 资源校验 ——
-      const ordered: Array<{ key: string; buffer: Buffer }> = [];
-      for (const [key] of [...normalized.state, ...normalized.inputs]) {
-        const buf = resources[key];
-        if (!buf) throw new UsageError(`kernel "${normalized.name}".run 缺少资源 "${key}"`);
-        const want = [...normalized.state, ...normalized.inputs].find(([n]) => n === key)?.[1];
+      // —— 资源校验 + 有序收集(预展开清单,稳态零分配) ——
+      const ordered: Buffer[] = [];
+      let count = -1;
+      let firstKey = '';
+      for (let i = 0; i < orderedFields.length; i++) {
+        const f = orderedFields[i]!;
+        const buf = resources[f.key];
+        if (!buf) throw new UsageError(`kernel "${normalized.name}".run 缺少资源 "${f.key}"`);
+        const want = expectedKinds.get(f.key);
         if (buf.kind !== want) {
-          throw new UsageError(`资源 "${key}" 类型不匹配: 需要 ${want},收到 ${buf.kind}`);
+          throw new UsageError(`资源 "${f.key}" 类型不匹配: 需要 ${want},收到 ${buf.kind}`);
         }
-        ordered.push({ key, buffer: buf });
-      }
-      const count = ordered[0]?.buffer.length ?? 0;
-      for (const { key, buffer } of ordered) {
-        if (buffer.length !== count) {
-          throw new UsageError(`资源 "${key}" 长度 ${buffer.length} 与 "${ordered[0]!.key}" 的 ${count} 不一致`);
+        if (count === -1) { count = buf.length; firstKey = f.key; }
+        else if (buf.length !== count) {
+          throw new UsageError(`资源 "${f.key}" 长度 ${buf.length} 与 "${firstKey}" 的 ${count} 不一致`);
         }
+        ordered.push(buf);
       }
 
       // —— uniform 打包上传 ——
-      const uBytes = packUniform(uniformLayout, { ...uniforms, count });
+      packUniformInto(sharedPack, uniformLayout, { ...uniforms, count });
       if (!uniformBuffer) {
         uniformBuffer = device.createBuffer({
           size: uniformLayout.size,
@@ -212,14 +222,15 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
           label: uniformBufferName,
         });
       }
-      device.queue.writeBuffer(uniformBuffer, 0, uBytes);
+      device.queue.writeBuffer(uniformBuffer, 0, sharedPack);
 
       // —— bind group(按 buffer 身份缓存) ——
-      const cacheKey = ordered.map(({ key, buffer }) => `${key}:${bufId(buffer.gpuBuffer)}`).join('|');
+      let cacheKey = 0;
+      for (let i = 0; i < ordered.length; i++) cacheKey = (cacheKey * 31 + bufId(ordered[i]!.gpuBuffer)) | 0;
       let bg = bindGroupCache.get(cacheKey);
       if (!bg) {
         const entries: GPUBindGroupEntry[] = [{ binding: 0, resource: { buffer: uniformBuffer } }];
-        ordered.forEach(({ buffer }, i) => entries.push({ binding: i + 1, resource: { buffer: buffer.gpuBuffer } }));
+        ordered.forEach((buffer, i) => entries.push({ binding: i + 1, resource: { buffer: buffer.gpuBuffer } }));
         bg = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
         bindGroupCache.set(cacheKey, bg);
       }
