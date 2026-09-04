@@ -42,6 +42,7 @@ export interface ResolvedConfig {
   beta: number;
   forceFactor: number;
   friction: number;
+  frictionHalfLife: number;
   dt: number;
   pointSize: number;
   maxNeighbors: number;
@@ -90,6 +91,7 @@ export function resolveConfig(config: ParticlesConfig = {}): ResolvedConfig {
     beta,
     forceFactor,
     friction: Math.exp(-dt / frictionHalfLife),
+    frictionHalfLife,
     dt,
     pointSize,
     maxNeighbors,

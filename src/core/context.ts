@@ -15,6 +15,11 @@ export class GpuContext {
 
   static #singleton: Promise<GpuContext> | null = null;
 
+  /** 仅供设备丢失自动重建(observe.watchDevice)使用:重置单例 */
+  static resetForTests(): void {
+    GpuContext.#singleton = null;
+  }
+
   static get(): Promise<GpuContext> {
     if (!GpuContext.#singleton) {
       GpuContext.#singleton = GpuContext.#create().catch((e) => {

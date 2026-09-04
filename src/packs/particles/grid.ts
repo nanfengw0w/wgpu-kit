@@ -44,6 +44,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 
 export function gridScanWgsl(): string {
+  // 两级扫描:① 各 workgroup 扫自己的 256-cell 块,块总和写入 blockSums;
+  // ② 单 workgroup 扫 blockSums(最多 SCAN_WORKGROUP 个块 = 65536 cell);
+  // ③ 各 workgroup 加上本块基址。256×256=65536 cell 内 O(1) 轮次,不再随规模线性退化。
   return /* wgsl */ `
 struct Params {
   count: u32, _pad0: u32,
@@ -55,27 +58,24 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read_write> cellStart: array<u32>;
 @group(0) @binding(3) var<storage, read_write> cellFill: array<u32>;
+@group(0) @binding(4) var<storage, read_write> blockSums: array<u32>;
+
 var<workgroup> partial: array<u32, ${SCAN_WORKGROUP}>;
 
 @compute @workgroup_size(${SCAN_WORKGROUP})
-fn main(@builtin(local_invocation_id) lid: vec3u) {
+fn main(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u) {
   let tid = lid.x;
+  let wg = ${SCAN_WORKGROUP}u;
+  let base = wid.x * wg;
   let cells = params.cells;
-  let chunks = (cells + ${SCAN_WORKGROUP}u - 1u) / ${SCAN_WORKGROUP}u;
 
-  // 每线程串行求自己 chunk 的局部和
-  var local = 0u;
-  for (var c = 0u; c < chunks; c++) {
-    let idx = c * ${SCAN_WORKGROUP}u + tid;
-    if (idx < cells) { local = local + atomicLoad(&cellCount[idx]); }
-  }
-  partial[tid] = local;
+  // ① 块内 Hillis-Steele(块不足时以 0 填充)
+  let v0 = select(0u, atomicLoad(&cellCount[base + tid]), base + tid < cells);
+  partial[tid] = v0;
   workgroupBarrier();
-
-  // 256 个局部和做 Hillis-Steele 含前缀扫描
   var offset = 1u;
   loop {
-    if (offset >= ${SCAN_WORKGROUP}u) { break; }
+    if (offset >= wg) { break; }
     var v = 0u;
     if (tid >= offset) { v = partial[tid - offset]; }
     workgroupBarrier();
@@ -83,18 +83,38 @@ fn main(@builtin(local_invocation_id) lid: vec3u) {
     workgroupBarrier();
     offset = offset << 1u;
   }
+  // 含前缀 → 排他:start = 块内前缀(不含自身),fill = start + count
+  let myCount = v0;
+  let myPrefix = select(partial[tid - 1u], 0u, tid == 0u);
+  if (base + tid < cells) {
+    cellStart[base + tid] = myPrefix;
+    cellFill[base + tid] = myPrefix + myCount;
+  }
+  // 块总和 → blockSums(含)
+  if (tid == 0u) { blockSums[wid.x] = partial[wg - 1u]; }
+  workgroupBarrier();
 
-  // chunk 基址 = 前面所有 chunk 的总和;重走 chunk 写 start/fill,并归零 count 给下一帧
-  var run = 0u;
-  if (tid > 0u) { run = partial[tid - 1u]; }
-  for (var c = 0u; c < chunks; c++) {
-    let idx = c * ${SCAN_WORKGROUP}u + tid;
-    if (idx < cells) {
-      cellStart[idx] = run;
-      cellFill[idx] = run;
-      run = run + atomicLoad(&cellCount[idx]);
-      atomicStore(&cellCount[idx], 0u);
+  // ② 块间扫描(单 workgroup;块数 = ceil(cells/wg) ≤ SCAN_WORKGROUP)
+  if (wid.x == 0u) {
+    var off = 1u;
+    loop {
+      if (off >= wg) { break; }
+      var v = 0u;
+      if (tid >= off) { v = blockSums[tid - off]; }
+      workgroupBarrier();
+      if (tid >= off) { blockSums[tid] = blockSums[tid] + v; }
+      workgroupBarrier();
+      off = off << 1u;
     }
+  }
+  workgroupBarrier();
+
+  // ③ 加块基址;cellCount 归零供下一帧
+  let blockBase = select(0u, blockSums[wid.x - 1u], wid.x > 0u);
+  if (base + tid < cells) {
+    cellStart[base + tid] = cellStart[base + tid] + blockBase;
+    cellFill[base + tid] = cellFill[base + tid] + blockBase;
+    atomicStore(&cellCount[base + tid], 0u);
   }
 }
 `;
