@@ -1,4 +1,4 @@
-import"./modulepreload-polyfill-B5Qt9EMX.js";import{G as K,C as Q,P as ae,m as re,B as Y}from"./presets-KjmVxDtz.js";const we={mono:"vec3f(v)",amber:`vec3f(
+import"./modulepreload-polyfill-B5Qt9EMX.js";import{G as K,C as Q,P as ae,m as re,B as Y}from"./presets-DEcsTrp7.js";const we={mono:"vec3f(v)",amber:`vec3f(
     1.35 * v * v,
     0.9 * v * v * v + 0.25 * v * (1.0 - v),
     0.15 * v * v * v
