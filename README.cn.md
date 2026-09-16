@@ -1,6 +1,6 @@
 # wgpu-kit
 
-> 浏览器创意编程 GPU 工具包:20 万粒子物理 120fps,只需 5 行代码。
+> 浏览器创意编程 GPU 工具包:20 万粒子物理 120fps,只需 5 行代码。(所有 fps 均为**可见帧**)
 > WebGPU 计算的全套样板——设备、缓冲、管线、dispatch、双缓冲、读回、错误行号映射——打包成两层简单 API。
 
 [![CI](https://github.com/nanfengw0w/wgpu-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/nanfengw0w/wgpu-kit/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/wgpu-kit)](https://www.npmjs.com/package/wgpu-kit) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -70,8 +70,8 @@ await integrate.run({ pos, vel }, { dt: 0.02 });
 
 | 指标 | 数值 | 环境 |
 | --- | --- | --- |
-| 粒子端到端 | 200,000 @ 122fps / 66,000 @ 144fps | RTX 4060 Laptop,playground 实测 |
-| 粒子计算(grid) | 16k→262k 平坦,3.0→3.3ms/帧 | headless 基准 |
+| 粒子端到端 | 200,000 @ 122fps · 66,000 @ 144fps(**可见帧**)| RTX 4060 Laptop,playground 实测 |
+| 粒子计算(grid) | 16k→262k 平坦,3.0→4.4ms/帧 | headless 基准,GPU 42°C |
 | 邻域算法 | grid 近似 O(N),66k 时比暴力快 8.5× | 同会话 A/B |
 | 库体积 | core gzip ~10kB(共享上下文构建) | gzip |
 
