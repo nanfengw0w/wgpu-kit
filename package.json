@@ -58,6 +58,10 @@
     "./vite": {
       "types": "./dist/vite.d.ts",
       "import": "./dist/vite.js"
+    },
+    "./grid": {
+      "types": "./dist/packs/grid/index.d.ts",
+      "import": "./dist/packs/grid/index.js"
     }
   },
   "peerDependencies": {
@@ -74,7 +78,8 @@
     "test": "vitest run",
     "bundle:tests": "esbuild tests/gpu/smoke.ts --bundle --format=esm --outfile=tests/gpu/smoke.bundle.js --log-level=warning && esbuild tests/gpu/bench.ts --bundle --format=esm --outfile=tests/gpu/bench.bundle.js --log-level=warning && esbuild tests/gpu/packages.ts --bundle --format=esm --outfile=tests/gpu/packages.bundle.js --log-level=warning",
     "verify": "node scripts/verify.mjs",
-    "prepublishOnly": "npm run build && node scripts/audit-exports.mjs"
+    "prepublishOnly": "npm run build && node scripts/audit-exports.mjs",
+    "bench": "node scripts/bench.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

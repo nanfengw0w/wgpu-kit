@@ -2,6 +2,7 @@ import { GpuContext } from '../../core/context.ts';
 import { Buffer } from '../../core/buffer.ts';
 import { PingPong } from '../../core/pingpong.ts';
 import { CompileError } from '../../core/errors.ts';
+import { createNeighborGrid } from '../grid/index.ts';
 import { mulberry32 } from '../particles/presets.ts';
 
 /**
@@ -76,21 +77,13 @@ export async function boids(config: BoidsConfig = {}): Promise<BoidsSim> {
   };
   writeUniform();
 
-  const cells = gridSize * gridSize;
-  const cellCount = await Buffer.create('u32', cells);
-  const cellStart = await Buffer.create('u32', cells);
-  const cellFill = await Buffer.create('u32', cells);
-  const order = await Buffer.create('u32', N);
-  cellCount.write(new Uint32Array(cells));
 
   const module = device.createShaderModule({ code: boidsWgsl(size), label: 'boids' });
   const info = await module.getCompilationInfo();
   const errors = info.messages.filter((m) => m.type === 'error');
   if (errors.length > 0) throw new CompileError('boids', errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
 
-  const pCounts = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_counts' } });
-  const pScan = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_scan' } });
-  const pScatter = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_scatter' } });
+  const neighborGrid = await createNeighborGrid({ count: N, worldHalf: 1.0, cellSize: perception });
   const pForce = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_force' } });
   const pRender = device.createRenderPipeline({
     layout: 'auto',
@@ -99,32 +92,6 @@ export async function boids(config: BoidsConfig = {}): Promise<BoidsSim> {
     primitive: { topology: 'triangle-list' },
   });
 
-  const bgCounts = (read: { pos: Buffer }) => device.createBindGroup({
-    layout: pCounts.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniform } },
-      { binding: 1, resource: { buffer: read.pos.gpuBuffer } },
-      { binding: 2, resource: { buffer: cellCount.gpuBuffer } },
-    ],
-  });
-  const bgScan = device.createBindGroup({
-    layout: pScan.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniform } },
-      { binding: 2, resource: { buffer: cellCount.gpuBuffer } },
-      { binding: 3, resource: { buffer: cellStart.gpuBuffer } },
-      { binding: 4, resource: { buffer: cellFill.gpuBuffer } },
-    ],
-  });
-  const bgScatter = (read: { pos: Buffer }) => device.createBindGroup({
-    layout: pScatter.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniform } },
-      { binding: 1, resource: { buffer: read.pos.gpuBuffer } },
-      { binding: 4, resource: { buffer: cellFill.gpuBuffer } },
-      { binding: 5, resource: { buffer: order.gpuBuffer } },
-    ],
-  });
   const bgForce = (read: { pos: Buffer; vel: Buffer }, write: { pos: Buffer; vel: Buffer }) => device.createBindGroup({
     layout: pForce.getBindGroupLayout(0),
     entries: [
@@ -133,9 +100,9 @@ export async function boids(config: BoidsConfig = {}): Promise<BoidsSim> {
       { binding: 6, resource: { buffer: read.vel.gpuBuffer } },
       { binding: 7, resource: { buffer: write.pos.gpuBuffer } },
       { binding: 8, resource: { buffer: write.vel.gpuBuffer } },
-      { binding: 3, resource: { buffer: cellStart.gpuBuffer } },
-      { binding: 4, resource: { buffer: cellFill.gpuBuffer } },
-      { binding: 5, resource: { buffer: order.gpuBuffer } },
+      { binding: 3, resource: { buffer: neighborGrid.cellStart.gpuBuffer } },
+      { binding: 4, resource: { buffer: neighborGrid.cellFill.gpuBuffer } },
+      { binding: 5, resource: { buffer: neighborGrid.order.gpuBuffer } },
     ],
   });
   const bgRender = (read: { pos: Buffer; vel: Buffer }) => device.createBindGroup({
@@ -168,15 +135,6 @@ export async function boids(config: BoidsConfig = {}): Promise<BoidsSim> {
       const write = useAB ? sideB : sideA;
       const enc = device.createCommandEncoder();
       const pass = enc.beginComputePass();
-      pass.setPipeline(pCounts);
-      pass.setBindGroup(0, bgCounts(read));
-      pass.dispatchWorkgroups(Math.ceil(N / WG));
-      pass.setPipeline(pScan);
-      pass.setBindGroup(0, bgScan);
-      pass.dispatchWorkgroups(1);
-      pass.setPipeline(pScatter);
-      pass.setBindGroup(0, bgScatter(read));
-      pass.dispatchWorkgroups(Math.ceil(N / WG));
       pass.setPipeline(pForce);
       pass.setBindGroup(0, bgForce(read, write));
       pass.dispatchWorkgroups(Math.ceil(N / WG));
@@ -200,7 +158,7 @@ export async function boids(config: BoidsConfig = {}): Promise<BoidsSim> {
     buffers() { return { pos: pp.current.pos, vel: pp.current.vel }; },
 
     destroy() {
-      pp.destroy(); cellCount.destroy(); cellStart.destroy(); cellFill.destroy(); order.destroy(); uniform.destroy();
+      pp.destroy(); neighborGrid.destroy(); uniform.destroy();
     },
   };
 }
@@ -247,57 +205,6 @@ fn cellOf(p: vec2f) -> u32 {
   let cx = clamp(i32(floor((p.x + params.worldHalf) / span * f32(g))), 0, g - 1);
   let cy = clamp(i32(floor((p.y + params.worldHalf) / span * f32(g))), 0, g - 1);
   return u32(cy) * u32(g) + u32(cx);
-}
-
-@compute @workgroup_size(${WG})
-fn main_counts(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x;
-  if (i >= params.count) { return; }
-  atomicAdd(&cellCount[cellOf(posIn[i])], 1u);
-}
-
-var<workgroup> partial: array<u32, 256>;
-@compute @workgroup_size(256)
-fn main_scan(@builtin(local_invocation_id) lid: vec3u) {
-  let tid = lid.x;
-  let cells = params.gridSize * params.gridSize;
-  let chunks = (cells + 255u) / 256u;
-  var local = 0u;
-  for (var c = 0u; c < chunks; c++) {
-    let idx = c * 256u + tid;
-    if (idx < cells) { local = local + atomicLoad(&cellCount[idx]); }
-  }
-  partial[tid] = local;
-  workgroupBarrier();
-  var offset = 1u;
-  loop {
-    if (offset >= 256u) { break; }
-    var v = 0u;
-    if (tid >= offset) { v = partial[tid - offset]; }
-    workgroupBarrier();
-    if (tid >= offset) { partial[tid] = partial[tid] + v; }
-    workgroupBarrier();
-    offset = offset << 1u;
-  }
-  var run = 0u;
-  if (tid > 0u) { run = partial[tid - 1u]; }
-  for (var c = 0u; c < chunks; c++) {
-    let idx = c * 256u + tid;
-    if (idx < cells) {
-      cellStart[idx] = run;
-      atomicStore(&cellFill[idx], run);
-      run = run + atomicLoad(&cellCount[idx]);
-      atomicStore(&cellCount[idx], 0u);
-    }
-  }
-}
-
-@compute @workgroup_size(${WG})
-fn main_scatter(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x;
-  if (i >= params.count) { return; }
-  let slot = atomicAdd(&cellFill[cellOf(posIn[i])], 1u);
-  order[slot] = i;
 }
 
 @compute @workgroup_size(${WG})

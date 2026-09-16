@@ -67,6 +67,10 @@ var init_context = __esm({
         this.adapterInfo = adapterInfo;
       }
       static #singleton = null;
+      /** 仅供设备丢失自动重建(observe.watchDevice)使用:重置单例 */
+      static resetForTests() {
+        _GpuContext.#singleton = null;
+      }
       static get() {
         if (!_GpuContext.#singleton) {
           _GpuContext.#singleton = _GpuContext.#create().catch((e) => {
@@ -114,14 +118,14 @@ init_context();
 
 // src/core/layout.ts
 var TYPES = {
-  f32: { size: 4, align: 4, comps: 1, typed: "Float32Array", wgsl: "f32" },
-  i32: { size: 4, align: 4, comps: 1, typed: "Int32Array", wgsl: "i32" },
-  u32: { size: 4, align: 4, comps: 1, typed: "Uint32Array", wgsl: "u32" },
-  vec2f: { size: 8, align: 8, comps: 2, typed: "Float32Array", wgsl: "vec2f" },
-  vec2i: { size: 8, align: 8, comps: 2, typed: "Int32Array", wgsl: "vec2i" },
-  vec2u: { size: 8, align: 8, comps: 2, typed: "Uint32Array", wgsl: "vec2u" },
-  vec3f: { size: 12, align: 16, comps: 3, typed: "Float32Array", wgsl: "vec3f" },
-  vec4f: { size: 16, align: 16, comps: 4, typed: "Float32Array", wgsl: "vec4f" }
+  f32: { size: 4, stride: 4, align: 4, comps: 1, typed: "Float32Array", wgsl: "f32" },
+  i32: { size: 4, stride: 4, align: 4, comps: 1, typed: "Int32Array", wgsl: "i32" },
+  u32: { size: 4, stride: 4, align: 4, comps: 1, typed: "Uint32Array", wgsl: "u32" },
+  vec2f: { size: 8, stride: 8, align: 8, comps: 2, typed: "Float32Array", wgsl: "vec2f" },
+  vec2i: { size: 8, stride: 8, align: 8, comps: 2, typed: "Int32Array", wgsl: "vec2i" },
+  vec2u: { size: 8, stride: 8, align: 8, comps: 2, typed: "Uint32Array", wgsl: "vec2u" },
+  vec3f: { size: 12, stride: 16, align: 16, comps: 3, typed: "Float32Array", wgsl: "vec3f" },
+  vec4f: { size: 16, stride: 16, align: 16, comps: 4, typed: "Float32Array", wgsl: "vec4f" }
 };
 
 // src/core/buffer.ts
@@ -138,13 +142,15 @@ var Buffer2 = class _Buffer {
   gpuBuffer;
   #ctx;
   #byteLength;
+  #stride;
   #staging = null;
   constructor(ctx, kind, length, gpuBuffer) {
     this.#ctx = ctx;
     this.kind = kind;
     this.length = length;
     this.gpuBuffer = gpuBuffer;
-    this.#byteLength = length * TYPES[kind].size;
+    this.#byteLength = length * TYPES[kind].stride;
+    this.#stride = TYPES[kind].stride;
   }
   static async create(kind, length) {
     if (!Number.isInteger(length) || length <= 0) {
@@ -154,23 +160,34 @@ var Buffer2 = class _Buffer {
     if (!def) throw new UsageError(`\u672A\u77E5\u7C7B\u578B "${String(kind)}",\u53EF\u7528: ${Object.keys(TYPES).join(", ")}`);
     const ctx = await GpuContext.get();
     const gpuBuffer = ctx.device.createBuffer({
-      size: length * def.size,
+      size: length * def.stride,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
       label: `wgpu-kit Buffer<${kind}>[${length}]`
     });
     return new _Buffer(ctx, kind, length, gpuBuffer);
   }
-  /** 校验并写入(CPU → GPU) */
+  /** 校验并写入(CPU → GPU);vec3f 等 stride≠size 的类型自动补 padding */
   write(data) {
-    const ctor = TYPED_CTORS[TYPES[this.kind].typed];
+    const def = TYPES[this.kind];
+    const ctor = TYPED_CTORS[def.typed];
     if (!(data instanceof ctor)) {
-      throw new UsageError(`Buffer<${this.kind}>.write \u9700\u8981 ${TYPES[this.kind].typed},\u6536\u5230 ${data.constructor?.name ?? typeof data}`);
+      throw new UsageError(`Buffer<${this.kind}>.write \u9700\u8981 ${def.typed},\u6536\u5230 ${data.constructor?.name ?? typeof data}`);
     }
-    const expected = this.length * TYPES[this.kind].comps;
+    const expected = this.length * def.comps;
     if (data.length !== expected) {
       throw new UsageError(`Buffer<${this.kind}>[${this.length}].write \u9700\u8981 ${expected} \u4E2A\u5206\u91CF,\u6536\u5230 ${data.length}`);
     }
-    this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, data);
+    if (def.stride === def.size || def.comps === 1) {
+      this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, data);
+      return;
+    }
+    const comps = def.comps;
+    const per = def.stride / 4;
+    const gpu = new Float32Array(this.length * per);
+    for (let i = 0; i < this.length; i++) {
+      for (let c = 0; c < comps; c++) gpu[i * per + c] = data[i * comps + c];
+    }
+    this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, gpu);
   }
   /** GPU → CPU:内部 staging buffer + mapAsync,mapAsync 的异步陷阱由库承担 */
   async read() {
@@ -188,9 +205,19 @@ var Buffer2 = class _Buffer {
     await this.#staging.mapAsync(GPUMapMode.READ);
     const ab = this.#staging.getMappedRange().slice(0);
     this.#staging.unmap();
-    if (def.typed === "Float32Array") return new Float32Array(ab);
-    if (def.typed === "Int32Array") return new Int32Array(ab);
-    return new Uint32Array(ab);
+    if (def.stride === def.size || def.comps === 1) {
+      if (def.typed === "Float32Array") return new Float32Array(ab);
+      if (def.typed === "Int32Array") return new Int32Array(ab);
+      return new Uint32Array(ab);
+    }
+    const comps = def.comps;
+    const per = def.stride / 4;
+    const src = new Float32Array(ab);
+    const out = new Float32Array(this.length * comps);
+    for (let i = 0; i < this.length; i++) {
+      for (let c = 0; c < comps; c++) out[i * comps + c] = src[i * per + c];
+    }
+    return out;
   }
   destroy() {
     if (this.#staging) {
