@@ -113,7 +113,7 @@ All fps numbers are **visible frames** — every `tick()` renders fresh state.
 | metric | value | environment |
 | --- | --- | --- |
 | particles end-to-end | 200,000 @ 122fps · 66,000 @ 144fps | RTX 4060 Laptop, playground |
-| particle compute (grid) | 16k→262k flat, 3.0→4.4ms/frame | headless bench, GPU 42°C |
+| particle compute (grid) | 16k→262k flat, 3.0→4.4ms/frame | reproducible via `npm run bench` → docs/BENCHMARK.md |
 | neighborhood algorithms | grid ~O(N), 8.5× faster than brute force at 66k | same-session A/B |
 | bundle size | core gzip ~10kB (all entries share one context) | measured by `npm run build` |
 
