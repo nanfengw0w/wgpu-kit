@@ -1,7 +1,7 @@
 {
   "name": "wgpu-kit",
   "version": "1.0.3",
-  "description": "Browser GPGPU middle layer: 100k particles in 5 lines. WebGPU compute without the boilerplate.",
+  "description": "Creative-coding GPU toolkit for the browser. 200k-particle physics at 120fps in 5 lines of code. WebGPU compute without the boilerplate.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -25,27 +25,35 @@
     },
     "./particles": {
       "types": "./dist/packs/particles/index.d.ts",
-      "import": "./dist/particles.js"
+      "import": "./dist/packs/particles/index.js"
     },
     "./three": {
       "types": "./dist/interop/three.d.ts",
-      "import": "./dist/three.js"
+      "import": "./dist/interop/three.js"
     },
     "./life": {
       "types": "./dist/packs/life/index.d.ts",
-      "import": "./dist/life.js"
+      "import": "./dist/packs/life/index.js"
     },
     "./react": {
       "types": "./dist/react/index.d.ts",
-      "import": "./dist/react.js"
+      "import": "./dist/react/index.js"
     },
     "./fields": {
       "types": "./dist/packs/fields/index.d.ts",
-      "import": "./dist/fields.js"
+      "import": "./dist/packs/fields/index.js"
     },
     "./image": {
       "types": "./dist/packs/image/index.d.ts",
-      "import": "./dist/image.js"
+      "import": "./dist/packs/image/index.js"
+    },
+    "./media": {
+      "types": "./dist/media.d.ts",
+      "import": "./dist/media.js"
+    },
+    "./observe": {
+      "types": "./dist/observe.d.ts",
+      "import": "./dist/observe.js"
     },
     "./vite": {
       "types": "./dist/vite.d.ts",
