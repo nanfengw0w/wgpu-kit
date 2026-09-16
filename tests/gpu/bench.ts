@@ -29,6 +29,8 @@ const CELLS: Cell[] = [
   { mode: 'grid', count: 66_000 },
   { mode: 'grid', count: 131_072 },
   { mode: 'grid', count: 200_000 },
+  { mode: 'grid', count: 200_000, maxNeighbors: 8100 },
+  { mode: 'grid', count: 200_000, maxNeighbors: 900 },
   { mode: 'grid', count: 262_144, rMax: 0.05 },
 ];
 

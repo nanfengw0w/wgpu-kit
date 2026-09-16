@@ -44,9 +44,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 
 export function gridScanWgsl(): string {
-  // 两级扫描:① 各 workgroup 扫自己的 256-cell 块,块总和写入 blockSums;
-  // ② 单 workgroup 扫 blockSums(最多 SCAN_WORKGROUP 个块 = 65536 cell);
-  // ③ 各 workgroup 加上本块基址。256×256=65536 cell 内 O(1) 轮次,不再随规模线性退化。
+  // 两级扫描,三 pass 结构(pass 边界保证跨 workgroup 可见性):
+  //   A main_scan_blocks : 每 workgroup 对自己的 256-cell 块做排他扫描 → cellFill(临时),
+  //                        块总和写入 blockSums[wid]
+  //   B main_scan_bases  : 单 workgroup 对 blockSums 做排他扫描 → 各块基址
+  //   C main_scan_apply  : start = cellFill + base;fill = start + count;counts 归零
+  // 支持至 65536 cell(gridSize ≤ 256);更大的世界需要多 pass 分块升级(路线图)。
   return /* wgsl */ `
 struct Params {
   count: u32, _pad0: u32,
@@ -57,19 +60,18 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read_write> cellStart: array<u32>;
-@group(0) @binding(3) var<storage, read_write> cellFill: array<u32>;
-@group(0) @binding(4) var<storage, read_write> blockSums: array<u32>;
+@group(0) @binding(3) var<storage, read_write> cellFill: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read_write> blockSums: array<atomic<u32>>;
 
 var<workgroup> partial: array<u32, ${SCAN_WORKGROUP}>;
 
+// Pass A:块内排他扫描。cellFill[c] = 块内排他前缀(临时);blockSums[wid] = 块总和
 @compute @workgroup_size(${SCAN_WORKGROUP})
-fn main(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u) {
+fn main_scan_blocks(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u) {
   let tid = lid.x;
   let wg = ${SCAN_WORKGROUP}u;
   let base = wid.x * wg;
   let cells = params.cells;
-
-  // ① 块内 Hillis-Steele(块不足时以 0 填充)
   let v0 = select(0u, atomicLoad(&cellCount[base + tid]), base + tid < cells);
   partial[tid] = v0;
   workgroupBarrier();
@@ -83,39 +85,45 @@ fn main(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: ve
     workgroupBarrier();
     offset = offset << 1u;
   }
-  // 含前缀 → 排他:start = 块内前缀(不含自身),fill = start + count
-  let myCount = v0;
-  let myPrefix = select(partial[tid - 1u], 0u, tid == 0u);
+  // 含前缀 → 排他:excl = incl - own
   if (base + tid < cells) {
-    cellStart[base + tid] = myPrefix;
-    cellFill[base + tid] = myPrefix + myCount;
+    atomicStore(&cellFill[base + tid], partial[tid] - v0);
   }
-  // 块总和 → blockSums(含)
-  if (tid == 0u) { blockSums[wid.x] = partial[wg - 1u]; }
-  workgroupBarrier();
+  if (tid == 0u) { atomicStore(&blockSums[wid.x], partial[wg - 1u]); }
+}
 
-  // ② 块间扫描(单 workgroup;块数 = ceil(cells/wg) ≤ SCAN_WORKGROUP)
-  if (wid.x == 0u) {
-    var off = 1u;
-    loop {
-      if (off >= wg) { break; }
-      var v = 0u;
-      if (tid >= off) { v = blockSums[tid - off]; }
-      workgroupBarrier();
-      if (tid >= off) { blockSums[tid] = blockSums[tid] + v; }
-      workgroupBarrier();
-      off = off << 1u;
-    }
-  }
+// Pass B:单 workgroup 对 blockSums 做排他扫描 → 各块基址
+@compute @workgroup_size(${SCAN_WORKGROUP})
+fn main_scan_bases(@builtin(local_invocation_id) lid: vec3u) {
+  let tid = lid.x;
+  let nBlocks = ceil(f32(params.cells) / ${SCAN_WORKGROUP}.0);
+  let v0 = select(atomicLoad(&blockSums[tid]), 0u, f32(tid) >= nBlocks);
+  partial[tid] = v0;
   workgroupBarrier();
-
-  // ③ 加块基址;cellCount 归零供下一帧
-  let blockBase = select(0u, blockSums[wid.x - 1u], wid.x > 0u);
-  if (base + tid < cells) {
-    cellStart[base + tid] = cellStart[base + tid] + blockBase;
-    cellFill[base + tid] = cellFill[base + tid] + blockBase;
-    atomicStore(&cellCount[base + tid], 0u);
+  var offset = 1u;
+  loop {
+    if (offset >= ${SCAN_WORKGROUP}u) { break; }
+    var v = 0u;
+    if (tid >= offset) { v = partial[tid - offset]; }
+    workgroupBarrier();
+    if (tid >= offset) { partial[tid] = partial[tid] + v; }
+    workgroupBarrier();
+    offset = offset << 1u;
   }
+  atomicStore(&blockSums[tid], partial[tid] - v0);
+}
+
+// Pass C:加块基址 → 最终 start/fill;counts 归零供下一帧
+@compute @workgroup_size(${SCAN_WORKGROUP})
+fn main_scan_apply(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= params.cells) { return; }
+  let block = i / ${SCAN_WORKGROUP}u;
+  let base = atomicLoad(&blockSums[block]);
+  let excl = atomicLoad(&cellFill[i]);
+  cellStart[i] = excl + base;
+  atomicExchange(&cellFill[i], excl + base);
+  atomicStore(&cellCount[i], 0u);
 }
 `;
 }
