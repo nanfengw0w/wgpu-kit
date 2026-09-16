@@ -25,7 +25,8 @@ export interface ParticlesConfig {
   dt?: number;
   /** 点大小(canvas 像素单位的比例,默认 0.004;大规模下自动缩小) */
   pointSize?: number;
-  /** 每粒子邻域候选上限(grid 模式;仅作极端抱团的保险丝,默认 32768 在支持密度内不触发——按格子顺序截断会引入方向偏差伪影) */
+  /** 每粒子邻域候选总上限(grid 模式,均摊到 3×3=9 格)。默认 8100:正常密度永不触发,
+   *  极端抱团时以轻微方向偏差换取帧率稳定(实测 30ms → 7.5ms @ 200k 抱团态)。设 Infinity 可禁用。 */
   maxNeighbors?: number;
 }
 
@@ -64,7 +65,7 @@ export function resolveConfig(config: ParticlesConfig = {}): ResolvedConfig {
     frictionHalfLife = 0.04,
     dt = 0.02,
     pointSize = 0.004,
-    maxNeighbors = 32768,
+    maxNeighbors = 8100,
   } = config;
 
   if (!Number.isInteger(count) || count <= 0 || count > 1_000_000) {
