@@ -12,7 +12,7 @@
  */
 import { execSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
-import { readFileSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,6 +55,24 @@ if (totalCore > 15) { console.error('  ✗ core 超预算'); fail = true; }
 const contextFiles = readdirSync(join(DIST, 'core')).filter((f) => f === 'context.js').length;
 if (contextFiles !== 1) { console.error('  ✗ dist/core/context.js 不唯一,多设备问题将复现'); fail = true; }
 console.log(`  context.js 副本: ${contextFiles}(必须为 1)`);
+
+// 结构断言:exports 里每个子路径指向的文件都必须真实存在。
+// (v1.0.3 事故:6 个子路径指向 dist/particles.js 这类根级文件,而 tsc preservedModules
+//  只镜像 src/ 结构,这些文件根本不存在 —— 发布后 wgpu-kit/particles 等子路径 import 直接失败。)
+const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+const missing = [];
+for (const [subpath, cond] of Object.entries(pkg.exports ?? {})) {
+  for (const [key, rel] of Object.entries(cond)) {
+    if (!existsSync(join(ROOT, rel))) missing.push(`${subpath} [${key}] → ${rel}`);
+  }
+}
+if (missing.length) {
+  console.error('  ✗ exports 指向不存在的产物:');
+  for (const m of missing) console.error(`      ${m}`);
+  fail = true;
+} else {
+  console.log(`  exports 目标: ${Object.keys(pkg.exports ?? {}).length} 个子路径全部命中产物`);
+}
 
 console.log(fail ? '\n构建失败!' : '\n✓ 构建完成(preservedModules),体积与结构断言通过');
 process.exit(fail ? 1 : 0);

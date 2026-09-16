@@ -1,6 +1,6 @@
 {
   "name": "wgpu-kit",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Creative-coding GPU toolkit for the browser. 200k-particle physics at 120fps in 5 lines of code. WebGPU compute without the boilerplate.",
   "type": "module",
   "license": "MIT",
@@ -73,7 +73,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "bundle:tests": "esbuild tests/gpu/smoke.ts --bundle --format=esm --outfile=tests/gpu/smoke.bundle.js --log-level=warning && esbuild tests/gpu/bench.ts --bundle --format=esm --outfile=tests/gpu/bench.bundle.js --log-level=warning && esbuild tests/gpu/packages.ts --bundle --format=esm --outfile=tests/gpu/packages.bundle.js --log-level=warning",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "prepublishOnly": "npm run build && node scripts/audit-exports.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
