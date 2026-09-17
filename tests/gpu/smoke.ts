@@ -92,7 +92,7 @@ async function main() {
     } catch (e) {
       const msg = String((e as Error).message);
       const isCompile = e instanceof CompileError;
-      const mapped = msg.includes('用户代码第 2 行');
+      const mapped = msg.includes('your code, line 2');
       report('compile-error-mapping', isCompile && mapped, isCompile ? (mapped ? msg.split('\n')[1] ?? '' : `未映射到用户行: ${msg}`) : `类型错误: ${String(e)}`);
     }
   }

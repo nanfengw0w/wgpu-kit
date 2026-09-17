@@ -206,7 +206,7 @@ async function runCDP(url, { timeout, screenshot }) {
         if (await evl('window.__done === true').catch(() => false)) break;
         if (Date.now() > deadline) {
           logs.push('[verify] 等待 __done 超时;诊断: ' + await evl(
-            `JSON.stringify({url: location.href, readyState: document.readyState, hasGpu: 'gpu' in navigator, results: window.__results ?? null, done: window.__done ?? null})`,
+            `JSON.stringify({url: location.href, readyState: document.readyState, hasGpu: 'gpu' in navigator, boot: window.__boot ?? null, results: window.__results ?? null, done: window.__done ?? null})`,
           ).catch(() => 'n/a'));
           break;
         }
