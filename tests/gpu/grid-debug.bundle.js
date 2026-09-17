@@ -1449,9 +1449,9 @@ async function main() {
   {
     const sim = await particles({ ...CFG, mode: "grid", maxNeighbors: 999999 });
     const dbg = sim.debugGrid?.();
-    const orderB = dbg ? dbg.order : void 0;
     const before = await sim.buffers().pos.read();
     const spBefore = await sim.buffers().species.read();
+    const orderBuf = dbg ? await dbg.order.read() : null;
     sim.tick();
     await ctx.sync();
     if (!dbg) {
@@ -1486,7 +1486,7 @@ async function main() {
         let ay = 0;
         const s0 = startB[cc], e0 = fillB[cc];
         for (let k = s0; k < e0; k++) {
-          const j = orderB ? orderB[k] : 0;
+          const j = orderBuf ? orderBuf[k] : 0;
           if (j === 0) continue;
           const relX = before[j * 2] - mpx;
           const relY = before[j * 2 + 1] - mpy;
