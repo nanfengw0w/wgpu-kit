@@ -1,6 +1,6 @@
 {
   "name": "wgpu-kit",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Creative-coding GPU toolkit for the browser. 200k-particle physics at 120fps in 5 lines of code. WebGPU compute without the boilerplate.",
   "type": "module",
   "license": "MIT",
