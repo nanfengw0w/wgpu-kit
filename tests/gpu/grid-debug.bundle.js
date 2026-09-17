@@ -1,16 +1,51 @@
+// src/core/codes.ts
+var ERR = {
+  /** WebGPU is unavailable or the adapter could not be acquired */
+  WGPU_UNAVAILABLE: "ERR_WGPU_UNAVAILABLE",
+  /** WGSL compilation failed */
+  COMPILE: "ERR_COMPILE",
+  /** Invalid argument passed by the caller */
+  USAGE: "ERR_USAGE",
+  /** A required uniform field is missing or has an invalid value */
+  UNIFORM_FIELD: "ERR_UNIFORM_FIELD",
+  /** Uniform scalar types are not yet supported */
+  UNIFORM_UNSUPPORTED: "ERR_UNIFORM_UNSUPPORTED",
+  /** workgroupSize is outside the valid range */
+  WORKGROUP_SIZE: "ERR_WORKGROUP_SIZE",
+  /** A resource (Buffer) is missing from the resources map */
+  RESOURCE_MISSING: "ERR_RESOURCE_MISSING",
+  /** A resource type does not match the kernel declaration */
+  RESOURCE_TYPE: "ERR_RESOURCE_TYPE",
+  /** Resource lengths are inconsistent across state/inputs */
+  RESOURCE_LENGTH: "ERR_RESOURCE_LENGTH",
+  /** Buffer.create received an invalid kind or length */
+  BUFFER_CREATE: "ERR_BUFFER_CREATE",
+  /** Buffer.write type or component count mismatch */
+  BUFFER_WRITE: "ERR_BUFFER_WRITE",
+  /** MediaRecorder is unavailable or the recording failed */
+  MEDIA: "ERR_MEDIA",
+  /** timestamp-query is not supported on this device */
+  TIMESTAMP_UNSUPPORTED: "ERR_TIMESTAMP_UNSUPPORTED",
+  /** A generic library error that doesn't fit any specific code */
+  GENERIC: "ERR_GENERIC"
+};
+
 // src/core/errors.ts
 var WgpuKitError = class extends Error {
-  constructor(message) {
+  /** Stable error code, e.g. 'ERR_WGPU_UNAVAILABLE' — safe to switch on. */
+  code;
+  constructor(code, message) {
     super(message);
     this.name = new.target.name;
+    this.code = code;
   }
 };
 var WebGPUUnavailableError = class extends WgpuKitError {
   constructor(reason) {
     super(
-      `\u5F53\u524D\u73AF\u5883\u4E0D\u53EF\u7528 WebGPU: ${reason}
-  \u6392\u67E5:\u2460 \u6D4F\u89C8\u5668\u9700 Chrome/Edge 113+ \u6216 Safari 18+;\u2461 \u65E0\u5934\u73AF\u5883\u9700\u5F00\u542F WebGPU;\u2462 \u68C0\u67E5 GPU \u9A71\u52A8\u4E0E\u786C\u4EF6\u52A0\u901F\u8BBE\u7F6E\u3002
-  \u53EF\u7528 navigator.gpu \u662F\u5426\u5B58\u5728\u5FEB\u901F\u5224\u65AD\u3002`
+      ERR.WGPU_UNAVAILABLE,
+      `WebGPU is unavailable: ${reason}
+  Check: 1) Use Chrome/Edge 113+ or Safari 18+. 2) Enable WebGPU in headless mode. 3) Verify GPU drivers and hardware acceleration.`
     );
   }
 };
@@ -18,22 +53,29 @@ var CompileError = class extends WgpuKitError {
   constructor(kernelName, messages, userCodeOffset) {
     const mapped = messages.map((m) => {
       const userLine = m.line - userCodeOffset;
-      const where = userLine > 0 ? `\u7528\u6237\u4EE3\u7801\u7B2C ${userLine} \u884C` : `\u751F\u6210\u4EE3\u7801\u7B2C ${m.line} \u884C(\u5E93\u7684\u95EE\u9898,\u6B22\u8FCE\u62A5 issue)`;
+      const where = userLine > 0 ? `your code, line ${userLine}` : `generated code, line ${m.line} (library issue \u2014 please file an issue)`;
       return `  ${where}: ${m.msg}`;
     }).join("\n");
-    super(`kernel "${kernelName}" WGSL \u7F16\u8BD1\u5931\u8D25:
+    super(ERR.COMPILE, `kernel "${kernelName}" WGSL compilation failed:
 ${mapped}`);
   }
 };
 var UsageError = class extends WgpuKitError {
+  constructor(code, message) {
+    super(code, message);
+  }
+};
+var PipelineError = class extends WgpuKitError {
+  constructor(label, detail) {
+    super(ERR.GENERIC, `compute pipeline "${label}" creation failed: ${detail}`);
+  }
 };
 async function createComputePipelineChecked(device, module, label, entryPoint = "main") {
   device.pushErrorScope("validation");
   const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint } });
   const err = await device.popErrorScope();
   if (err) {
-    throw new WgpuKitError(`compute \u7BA1\u7EBF "${label}" \u521B\u5EFA\u5931\u8D25: ${err.message}
-  \u5E38\u89C1\u539F\u56E0:storage buffer \u6570\u8D85\u8FC7\u6BCF\u9636\u6BB5\u4E0A\u9650(\u53EF\u5411\u672C\u5E93\u63D0 issue \u7533\u8BF7 limits \u652F\u6301)`);
+    throw new PipelineError(label, err.message);
   }
   return pipeline;
 }
@@ -62,7 +104,7 @@ var GpuContext = class _GpuContext {
   }
   static async #create() {
     if (typeof navigator === "undefined" || !("gpu" in navigator) || !navigator.gpu) {
-      throw new WebGPUUnavailableError("navigator.gpu \u4E0D\u5B58\u5728");
+      throw new WebGPUUnavailableError("navigator.gpu is not available");
     }
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new WebGPUUnavailableError("requestAdapter() \u8FD4\u56DE null");
@@ -116,6 +158,7 @@ var Buffer = class _Buffer {
   #ctx;
   #byteLength;
   #stride;
+  #reading = null;
   #staging = null;
   constructor(ctx, kind, length, gpuBuffer) {
     this.#ctx = ctx;
@@ -127,10 +170,10 @@ var Buffer = class _Buffer {
   }
   static async create(kind, length) {
     if (!Number.isInteger(length) || length <= 0) {
-      throw new UsageError(`Buffer \u957F\u5EA6\u5FC5\u987B\u662F\u6B63\u6574\u6570,\u6536\u5230: ${String(length)}`);
+      throw new UsageError(ERR.BUFFER_CREATE, `Buffer length must be a positive integer, got: ${String(length)}`);
     }
     const def = TYPES[kind];
-    if (!def) throw new UsageError(`\u672A\u77E5\u7C7B\u578B "${String(kind)}",\u53EF\u7528: ${Object.keys(TYPES).join(", ")}`);
+    if (!def) throw new UsageError(ERR.BUFFER_CREATE, `Unknown Buffer kind "${String(kind)}". Available: ${Object.keys(TYPES).join(", ")}`);
     const ctx = await GpuContext.get();
     const gpuBuffer = ctx.device.createBuffer({
       size: length * def.stride,
@@ -144,11 +187,11 @@ var Buffer = class _Buffer {
     const def = TYPES[this.kind];
     const ctor = TYPED_CTORS[def.typed];
     if (!(data instanceof ctor)) {
-      throw new UsageError(`Buffer<${this.kind}>.write \u9700\u8981 ${def.typed},\u6536\u5230 ${data.constructor?.name ?? typeof data}`);
+      throw new UsageError(ERR.BUFFER_WRITE, `Buffer<${this.kind}>.write expects ${def.typed}, got ${data.constructor?.name ?? typeof data}`);
     }
     const expected = this.length * def.comps;
     if (data.length !== expected) {
-      throw new UsageError(`Buffer<${this.kind}>[${this.length}].write \u9700\u8981 ${expected} \u4E2A\u5206\u91CF,\u6536\u5230 ${data.length}`);
+      throw new UsageError(ERR.BUFFER_WRITE, `Buffer<${this.kind}>[${this.length}].write expects ${expected} components, got ${data.length}`);
     }
     if (def.stride === def.size || def.comps === 1) {
       this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, data);
@@ -164,6 +207,15 @@ var Buffer = class _Buffer {
   }
   /** GPU → CPU:内部 staging buffer + mapAsync,mapAsync 的异步陷阱由库承担 */
   async read() {
+    if (this.#reading) return this.#reading;
+    this.#reading = this.#doRead();
+    try {
+      return await this.#reading;
+    } finally {
+      this.#reading = null;
+    }
+  }
+  async #doRead() {
     const def = TYPES[this.kind];
     if (!this.#staging) {
       this.#staging = this.#ctx.device.createBuffer({
@@ -216,7 +268,7 @@ var PingPong = class _PingPong {
   }
   static async create(kinds, length) {
     const names = Object.keys(kinds);
-    if (names.length === 0) throw new Error("PingPong \u81F3\u5C11\u9700\u8981\u4E00\u4E2A\u5B57\u6BB5");
+    if (names.length === 0) throw new Error("PingPong requires at least one field");
     const make = async () => {
       const side = {};
       for (const name of names) side[name] = await Buffer.create(kinds[name], length);
@@ -360,7 +412,7 @@ function resolveMatrix(forces, seed) {
   if (typeof forces === "string") {
     const preset = FORCE_PRESETS[forces];
     if (!preset) {
-      throw new Error(`\u672A\u77E5\u529B\u77E9\u9635\u9884\u8BBE "${forces}",\u53EF\u7528: ${Object.keys(FORCE_PRESETS).join(", ")}, random`);
+      throw new Error(`Unknown force preset "${forces}". Available: ${Object.keys(FORCE_PRESETS).join(", ")}, random`);
     }
     return preset;
   }
@@ -387,13 +439,13 @@ function resolveConfig(config = {}) {
     maxNeighbors = 8100
   } = config;
   if (!Number.isInteger(count) || count <= 0 || count > 1e6) {
-    throw new UsageError(`count \u5FC5\u987B\u662F 1..1_000_000 \u7684\u6574\u6570,\u6536\u5230: ${String(count)}`);
+    throw new UsageError(ERR.USAGE, `count must be an integer in 1..1_000_000, got: ${String(count)}`);
   }
   if (!MODES.includes(mode)) {
-    throw new UsageError(`mode \u5FC5\u987B\u662F ${MODES.join(" | ")},\u6536\u5230: "${String(mode)}"`);
+    throw new UsageError(ERR.USAGE, `mode must be one of ${MODES.join(" | ")}, got: "${String(mode)}"`);
   }
   if (mode === "n2" && count > 32e3) {
-    throw new UsageError(`mode='n2' \u5EFA\u8BAE count \u2264 20000(\u5F53\u524D ${count});\u5927\u89C4\u6A21\u8BF7\u7528 mode='tiled' \u6216 'grid'`);
+    throw new UsageError(ERR.USAGE, `mode='n2' is recommended for count <= 20000 (got ${count}); use 'tiled' or 'grid' for larger counts`);
   }
   const seedStr = String(seed);
   return {
@@ -655,70 +707,50 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read_write> cellStart: array<u32>;
-@group(0) @binding(3) var<storage, read_write> cellFill: array<atomic<u32>>;
-@group(0) @binding(4) var<storage, read_write> blockSums: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> cellFill: array<u32>;
 
 var<workgroup> partial: array<u32, ${SCAN_WORKGROUP}>;
+var<workgroup> carry: u32;
 
-// Pass A:\u5757\u5185\u6392\u4ED6\u626B\u63CF\u3002cellFill[c] = \u5757\u5185\u6392\u4ED6\u524D\u7F00(\u4E34\u65F6);blockSums[wid] = \u5757\u603B\u548C
 @compute @workgroup_size(${SCAN_WORKGROUP})
-fn main_scan_blocks(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u) {
+fn main(@builtin(local_invocation_id) lid: vec3u) {
   let tid = lid.x;
   let wg = ${SCAN_WORKGROUP}u;
-  let base = wid.x * wg;
   let cells = params.cells;
-  let v0 = select(0u, atomicLoad(&cellCount[base + tid]), base + tid < cells);
-  partial[tid] = v0;
+  let numChunks = (cells + wg - 1u) / wg;
+  if (tid == 0u) { carry = 0u; }
   workgroupBarrier();
-  var offset = 1u;
-  loop {
-    if (offset >= wg) { break; }
-    var v = 0u;
-    if (tid >= offset) { v = partial[tid - offset]; }
+  for (var ch = 0u; ch < numChunks; ch++) {
+    let idx = ch * wg + tid;
+    let inRange = idx < cells;
+    let v0 = select(0u, atomicLoad(&cellCount[idx]), inRange);
+    partial[tid] = v0;
     workgroupBarrier();
-    if (tid >= offset) { partial[tid] = partial[tid] + v; }
+    // \u5757\u5185\u542B\u524D\u7F00(Hillis-Steele)
+    var offset = 1u;
+    loop {
+      if (offset >= wg) { break; }
+      var v = 0u;
+      if (tid >= offset) { v = partial[tid - offset]; }
+      workgroupBarrier();
+      if (tid >= offset) { partial[tid] = partial[tid] + v; }
+      workgroupBarrier();
+      offset = offset << 1u;
+    }
+    // \u6392\u4ED6:start = carry + \u5757\u5185\u524D\u7F00(\u4E0D\u542B\u81EA\u8EAB);fill \u662F scatter \u7684\u539F\u5B50\u586B\u5145
+    // \u6E38\u6807,\u521D\u59CB\u5316\u4E3A\u6BB5\u8D77\u70B9(\u4E0E\u901A\u7528\u5305 NeighborGrid \u540C\u8BED\u4E49)\u2014\u2014scatter \u586B\u5B8C\u4E00\u683C
+    // \u540E fill \u6070\u597D = start + count,\u529B\u6838\u8BFB [start, fill) \u624D\u4E0D\u4F1A\u591A\u626B\u4E0B\u4E00\u683C\u7684\u7C92\u5B50\u3002
+    if (inRange) {
+      let excl = partial[tid] - v0;
+      cellStart[idx] = carry + excl;
+      cellFill[idx] = carry + excl;
+      atomicStore(&cellCount[idx], 0u);
+    }
+    // \u6240\u6709\u7EBF\u7A0B\u8BFB\u5B8C partial/\u5199\u5B8C carry \u540E\u624D\u80FD\u8FDB\u5165\u4E0B\u4E00\u5757
     workgroupBarrier();
-    offset = offset << 1u;
+    if (tid == wg - 1u) { carry = carry + partial[wg - 1u]; }
+    workgroupBarrier();
   }
-  // \u542B\u524D\u7F00 \u2192 \u6392\u4ED6:excl = incl - own
-  if (base + tid < cells) {
-    atomicStore(&cellFill[base + tid], partial[tid] - v0);
-  }
-  if (tid == 0u) { atomicStore(&blockSums[wid.x], partial[wg - 1u]); }
-}
-
-// Pass B:\u5355 workgroup \u5BF9 blockSums \u505A\u6392\u4ED6\u626B\u63CF \u2192 \u5404\u5757\u57FA\u5740
-@compute @workgroup_size(${SCAN_WORKGROUP})
-fn main_scan_bases(@builtin(local_invocation_id) lid: vec3u) {
-  let tid = lid.x;
-  let nBlocks = ceil(f32(params.cells) / ${SCAN_WORKGROUP}.0);
-  let v0 = select(atomicLoad(&blockSums[tid]), 0u, f32(tid) >= nBlocks);
-  partial[tid] = v0;
-  workgroupBarrier();
-  var offset = 1u;
-  loop {
-    if (offset >= ${SCAN_WORKGROUP}u) { break; }
-    var v = 0u;
-    if (tid >= offset) { v = partial[tid - offset]; }
-    workgroupBarrier();
-    if (tid >= offset) { partial[tid] = partial[tid] + v; }
-    workgroupBarrier();
-    offset = offset << 1u;
-  }
-  atomicStore(&blockSums[tid], partial[tid] - v0);
-}
-
-// Pass C:\u52A0\u5757\u57FA\u5740 \u2192 \u6700\u7EC8 start/fill;counts \u5F52\u96F6\u4F9B\u4E0B\u4E00\u5E27
-@compute @workgroup_size(${SCAN_WORKGROUP})
-fn main_scan_apply(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x;
-  if (i >= params.cells) { return; }
-  let block = i / ${SCAN_WORKGROUP}u;
-  let base = atomicLoad(&blockSums[block]);
-  let excl = atomicLoad(&cellFill[i]);
-  cellStart[i] = excl + base;
-  atomicExchange(&cellFill[i], excl + base);
-  atomicStore(&cellCount[i], 0u);
 }
 `
   );
@@ -990,7 +1022,7 @@ async function particles(config = {}) {
   }
   const phys = { rMax: cfg.rMax, beta: cfg.beta, forceFactor: cfg.forceFactor, frictionHalfLife: cfg.frictionHalfLife, dt: cfg.dt };
   const uniform = device.createBuffer({ size: USIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "particles-params" });
-  const gridSizeOf = (rMax, half = worldHalf) => Math.max(4, Math.ceil(2 * half / Math.max(rMax, 1e-3)));
+  const gridSizeOf = (rMax, half = worldHalf) => Math.max(4, Math.floor(2 * half / Math.max(rMax, 1e-3)));
   let gridSize = gridSizeOf(phys.rMax, worldHalf);
   const writeUniform = (dt) => {
     const buf = new ArrayBuffer(USIZE);
@@ -1032,7 +1064,6 @@ async function particles(config = {}) {
     g.partial.destroy();
     g.sortedPos.destroy();
     g.sortedSp.destroy();
-    g.blockSums.destroy();
   };
   const buildGrid = async (size) => {
     const cells = size * size;
@@ -1046,14 +1077,11 @@ async function particles(config = {}) {
     const mScatter = await compile(gridScatterWgsl(), "grid-scatter");
     const mForce = await compile(gridForceWgsl(4), "grid-force");
     const pCounts = await makePipeline(mCounts, "main", "grid-counts");
-    const pScanBlocks = await makePipeline(mScan, "main_scan_blocks", "grid-scan-blocks");
-    const pScanBases = await makePipeline(mScan, "main_scan_bases", "grid-scan-bases");
-    const pScanApply = await makePipeline(mScan, "main_scan_apply", "grid-scan-apply");
+    const pScan = await makePipeline(mScan, "main", "grid-scan");
     const pScatter = await makePipeline(mScatter, "main", "grid-scatter");
     const pForceCell = await makePipeline(mForce, "main_force_cell", "grid-force-cell");
     const pForceInt = await makePipeline(mForce, "main_force_integrate", "grid-force-integrate");
     const partial = await Buffer.create("vec2f", cfg.count * 9);
-    const blockSums = await Buffer.create("u32", Math.ceil(cells / 256));
     const sortedPos = await Buffer.create("vec2f", cfg.count);
     const sortedSp = await Buffer.create("u32", cfg.count);
     const bgCounts = (readPos) => device.createBindGroup({
@@ -1064,34 +1092,13 @@ async function particles(config = {}) {
         { binding: 2, resource: { buffer: count.gpuBuffer } }
       ]
     });
-    const bgScanBlocks = device.createBindGroup({
-      layout: pScanBlocks.getBindGroupLayout(0),
+    const bgScan = device.createBindGroup({
+      layout: pScan.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uniform } },
         { binding: 1, resource: { buffer: count.gpuBuffer } },
         { binding: 2, resource: { buffer: start.gpuBuffer } },
-        { binding: 3, resource: { buffer: fill.gpuBuffer } },
-        { binding: 4, resource: { buffer: blockSums.gpuBuffer } }
-      ]
-    });
-    const bgScanBases = device.createBindGroup({
-      layout: pScanBases.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: { buffer: count.gpuBuffer } },
-        { binding: 2, resource: { buffer: start.gpuBuffer } },
-        { binding: 3, resource: { buffer: fill.gpuBuffer } },
-        { binding: 4, resource: { buffer: blockSums.gpuBuffer } }
-      ]
-    });
-    const bgScanApply = device.createBindGroup({
-      layout: pScanApply.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: { buffer: count.gpuBuffer } },
-        { binding: 2, resource: { buffer: start.gpuBuffer } },
-        { binding: 3, resource: { buffer: fill.gpuBuffer } },
-        { binding: 4, resource: { buffer: blockSums.gpuBuffer } }
+        { binding: 3, resource: { buffer: fill.gpuBuffer } }
       ]
     });
     const bgScatter = (readPos) => device.createBindGroup({
@@ -1139,7 +1146,6 @@ async function particles(config = {}) {
     };
     const state = {
       size,
-      cells,
       count,
       start,
       fill,
@@ -1147,19 +1153,14 @@ async function particles(config = {}) {
       partial,
       sortedPos,
       sortedSp,
-      blockSums,
       pCounts,
-      pScanBlocks,
-      pScanBases,
-      pScanApply,
+      pScan,
       pScatter,
       pForceCell,
       pForceInt,
       bgCountsA: bgCounts(sideA.pos),
       bgCountsB: bgCounts(sideB.pos),
-      bgScanBlocks,
-      bgScanBases,
-      bgScanApply,
+      bgScan,
       bgScatterA: bgScatter(sideA.pos),
       bgScatterB: bgScatter(sideB.pos),
       bgForceCellAB: bgForceCell(sideA.pos),
@@ -1228,25 +1229,35 @@ async function particles(config = {}) {
         grid.bgForceCellRebuild(sideA.pos);
         gridBindGroupsDirty = false;
       }
+      const enc = device.createCommandEncoder();
       if (grid) {
-        const runPass = (pipeline, bg, wgs) => {
-          const e = device.createCommandEncoder();
-          const p = e.beginComputePass();
-          p.setPipeline(pipeline);
-          p.setBindGroup(0, bg);
-          p.dispatchWorkgroups(wgs);
-          p.end();
-          device.queue.submit([e.finish()]);
-        };
-        const nCellWg = Math.ceil(grid.cells / 256);
-        runPass(grid.pCounts, useAB ? grid.bgCountsA : grid.bgCountsB, Math.ceil(cfg.count / WORKGROUP));
-        runPass(grid.pScanBlocks, grid.bgScanBlocks, nCellWg);
-        runPass(grid.pScanBases, grid.bgScanBases, 1);
-        runPass(grid.pScatter, useAB ? grid.bgScatterA : grid.bgScatterB, Math.ceil(cfg.count / WORKGROUP));
-        runPass(grid.pForceCell, useAB ? grid.bgForceCellAB : grid.bgForceCellBA, Math.ceil(cfg.count * 9 / WORKGROUP));
-        runPass(grid.pForceInt, useAB ? grid.bgIntegrateAB : grid.bgIntegrateBA, Math.ceil(cfg.count / WORKGROUP));
+        const passCounts = enc.beginComputePass();
+        passCounts.setPipeline(grid.pCounts);
+        passCounts.setBindGroup(0, useAB ? grid.bgCountsA : grid.bgCountsB);
+        passCounts.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
+        passCounts.end();
+        const passScan = enc.beginComputePass();
+        passScan.setPipeline(grid.pScan);
+        passScan.setBindGroup(0, grid.bgScan);
+        passScan.dispatchWorkgroups(1);
+        passScan.end();
+        const passScatter = enc.beginComputePass();
+        passScatter.setPipeline(grid.pScatter);
+        passScatter.setBindGroup(0, useAB ? grid.bgScatterA : grid.bgScatterB);
+        passScatter.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
+        passScatter.end();
+        const passB = enc.beginComputePass();
+        passB.setPipeline(grid.pForceCell);
+        passB.setBindGroup(0, useAB ? grid.bgForceCellAB : grid.bgForceCellBA);
+        passB.dispatchWorkgroups(Math.ceil(cfg.count * 9 / WORKGROUP));
+        passB.end();
+        const passC = enc.beginComputePass();
+        passC.setPipeline(grid.pForceInt);
+        passC.setBindGroup(0, useAB ? grid.bgIntegrateAB : grid.bgIntegrateBA);
+        passC.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
+        passC.end();
+        device.queue.submit([enc.finish()]);
       } else {
-        const enc = device.createCommandEncoder();
         const pass = enc.beginComputePass();
         pass.setPipeline(simPipeline);
         pass.setBindGroup(0, useAB ? bgAB : bgBA);
@@ -1350,6 +1361,70 @@ var report = (name, pass, detail = "") => {
 };
 var CFG = { count: 28e3, seed: "18dz5h", forces: "random", rMax: 0.12 };
 var FRAMES = 300;
+async function scanInvariants(label, n, rMax2, frames) {
+  const sim = await particles({ count: n, seed: CFG.seed, forces: "random", rMax: rMax2, mode: "grid" });
+  const dbg = sim.debugGrid?.();
+  if (!dbg) {
+    report(`${label} \u626B\u63CF\u4E0D\u53D8\u91CF`, false, "debugGrid \u4E0D\u53EF\u7528");
+    sim.destroy();
+    return;
+  }
+  for (let f = 0; f < frames; f++) sim.tick();
+  const ctx = await GpuContext.get();
+  await ctx.sync();
+  const start = await dbg.start.read();
+  const fill = await dbg.fill.read();
+  const cells = start.length;
+  let ok = true;
+  let why = "";
+  let total = 0;
+  for (let i = 0; i < cells; i++) {
+    if (start[i] > fill[i]) {
+      ok = false;
+      why = `\u683C${i} start>fill(${start[i]}>${fill[i]})`;
+      break;
+    }
+    if (i > 0 && start[i] < start[i - 1]) {
+      ok = false;
+      why = `\u683C${i} start \u56DE\u9000(${start[i - 1]}\u2192${start[i]})\u2190\u626B\u63CF\u622A\u65AD\u7684\u7279\u5F81`;
+      break;
+    }
+    total += fill[i] - start[i];
+  }
+  if (ok && total !== n) {
+    ok = false;
+    why = `\u03A3(fill-start)=${total} \u2260 N=${n} \u2190 \u626B\u63CF\u8986\u76D6\u4E0D\u5B8C\u6574`;
+  }
+  report(`${label} \u626B\u63CF\u4E0D\u53D8\u91CF(${frames}\u5E27)`, ok, ok ? `cells=${cells} \u5355\u8C03 \u2713 \u03A3=N \u2713` : why);
+  sim.destroy();
+}
+async function frozenBands(label, n, rMax2) {
+  const sim = await particles({ count: n, seed: CFG.seed, forces: "random", rMax: rMax2, mode: "grid" });
+  const ctx = await GpuContext.get();
+  const p0 = await sim.buffers().pos.read();
+  for (let f = 0; f < 120; f++) sim.tick();
+  await ctx.sync();
+  const p1 = await sim.buffers().pos.read();
+  const count = p1.length / 2;
+  const BANDS = 8;
+  const half = Math.sqrt(n / 16e3);
+  const means = [];
+  for (let b = 0; b < BANDS; b++) {
+    let sum = 0;
+    let cnt = 0;
+    for (let i = 0; i < count; i++) {
+      const band = Math.min(BANDS - 1, Math.max(0, Math.floor((p0[i * 2 + 1] + half) / (2 * half) * BANDS)));
+      if (band !== b) continue;
+      sum += Math.hypot(p1[i * 2] - p0[i * 2], p1[i * 2 + 1] - p0[i * 2 + 1]);
+      cnt++;
+    }
+    means.push(cnt > 0 ? sum / cnt : -1);
+  }
+  const min = Math.min(...means);
+  const ok = min > 0.02;
+  report(`${label} \u51BB\u7ED3\u5E26\u68C0\u6D4B`, ok, `\u5404\u5E26\u5E73\u5747\u4F4D\u79FB [${means.map((m) => m.toFixed(3)).join(", ")}](\u6700\u4F4E\u5E26\u9608 0.02)`);
+  sim.destroy();
+}
 function structureStats(pos, samples, rHalf) {
   const n = pos.length / 2;
   let nnSum = 0;
@@ -1461,7 +1536,7 @@ async function main() {
     const partial = await dbg.partial.read();
     const startB = await dbg.start.read();
     const fillB = await dbg.fill.read();
-    const gSz = Math.max(4, Math.ceil(2 * 1.3228756555322954 / 0.12));
+    const gSz = Math.max(4, Math.floor(2 * 1.3228756555322954 / 0.12));
     const cellOfT = (x, y) => {
       const cx = Math.min(Math.max(Math.floor((x + 1.3228756555322954) / (2 * 1.3228756555322954) * gSz), 0), gSz - 1);
       const cy = Math.min(Math.max(Math.floor((y + 1.3228756555322954) / (2 * 1.3228756555322954) * gSz), 0), gSz - 1);
@@ -1524,6 +1599,11 @@ async function main() {
   }
   report("\u9010\u5E27\u5BF9\u6BD4", true, await compareModes(1));
   report("\u9010\u5E27\u5BF9\u6BD4", true, await compareModes(30));
+  await scanInvariants("28k", CFG.count, CFG.rMax, 1);
+  await scanInvariants("28k", CFG.count, CFG.rMax, 120);
+  await scanInvariants("42k", 42e3, 0.16, 120);
+  await frozenBands("28k", CFG.count, CFG.rMax);
+  await frozenBands("42k", 42e3, 0.16);
   const t0 = performance.now();
   const gFuse = await runMode("grid", 1e5);
   report("grid \u65E0\u4FDD\u9669\u4E1D\u5BF9\u7167", true, `\u6700\u8FD1\u90BB ${gFuse.nn.toFixed(4)} \xB7 \u90BB\u5C45 ${gFuse.nbr.toFixed(1)}`);

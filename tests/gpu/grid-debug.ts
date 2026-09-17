@@ -18,6 +18,70 @@ const report = (name: string, pass: boolean, detail = '') => {
 const CFG = { count: 28_000, seed: '18dz5h', forces: 'random' as const, rMax: 0.12 };
 const FRAMES = 300;
 
+/**
+ * 扫描不变量:cellStart 单调不减、Σ(fill-start)=N、末格 fill=N。
+ * 背景:v1.0.x 的扫描核按多 workgroup 分块写却 dispatch(1),每帧只有前 256 格
+ * 被处理,其余格 start/fill 恒 0 —— 本检查在任意 cells>256 的配置下都会立即
+ * 失败(单调性回退 + 总数缺口),是 v1.0.0 线上"水平冻结带"事故的常驻回归。
+ */
+async function scanInvariants(label: string, n: number, rMax2: number, frames: number): Promise<void> {
+  const sim = await particles({ count: n, seed: CFG.seed, forces: 'random', rMax: rMax2, mode: 'grid' });
+  const dbg = sim.debugGrid?.();
+  if (!dbg) { report(`${label} 扫描不变量`, false, 'debugGrid 不可用'); sim.destroy(); return; }
+  for (let f = 0; f < frames; f++) sim.tick();
+  const ctx = await GpuContext.get();
+  await ctx.sync();
+  const start = (await dbg.start.read()) as Uint32Array;
+  const fill = (await dbg.fill.read()) as Uint32Array;
+  const cells = start.length;
+  // 定态语义:scan 写 fill=start(填充游标),scatter 每粒子原子 +1,
+  // tick 后 fill-start = 该格粒子数,Σ = N。
+  let ok = true;
+  let why = '';
+  let total = 0;
+  for (let i = 0; i < cells; i++) {
+    if (start[i]! > fill[i]!) { ok = false; why = `格${i} start>fill(${start[i]}>${fill[i]})`; break; }
+    if (i > 0 && start[i]! < start[i - 1]!) { ok = false; why = `格${i} start 回退(${start[i - 1]}→${start[i]})←扫描截断的特征`; break; }
+    total += fill[i]! - start[i]!;
+  }
+  if (ok && total !== n) { ok = false; why = `Σ(fill-start)=${total} ≠ N=${n} ← 扫描覆盖不完整`; }
+  report(`${label} 扫描不变量(${frames}帧)`, ok, ok ? `cells=${cells} 单调 ✓ Σ=N ✓` : why);
+  sim.destroy();
+}
+
+/**
+ * 冻结带检测:按世界 y 坐标分 8 个水平带,120 帧后统计各带平均位移。
+ * 网格扫描截断时,死格子里的粒子受力恒零、速度被摩擦衰减到 0,整带位移≈0,
+ * 与活带差一个数量级以上 —— 正是用户截图中"上半部分动、下半部分不动"的症状。
+ */
+async function frozenBands(label: string, n: number, rMax2: number): Promise<void> {
+  const sim = await particles({ count: n, seed: CFG.seed, forces: 'random', rMax: rMax2, mode: 'grid' });
+  const ctx = await GpuContext.get();
+  const p0 = (await sim.buffers().pos.read()) as Float32Array;
+  for (let f = 0; f < 120; f++) sim.tick();
+  await ctx.sync();
+  const p1 = (await sim.buffers().pos.read()) as Float32Array;
+  const count = p1.length / 2;
+  const BANDS = 8;
+  const half = Math.sqrt(n / 16_000);
+  const means: number[] = [];
+  for (let b = 0; b < BANDS; b++) {
+    let sum = 0;
+    let cnt = 0;
+    for (let i = 0; i < count; i++) {
+      const band = Math.min(BANDS - 1, Math.max(0, Math.floor((p0[i * 2 + 1]! + half) / (2 * half) * BANDS)));
+      if (band !== b) continue;
+      sum += Math.hypot(p1[i * 2]! - p0[i * 2]!, p1[i * 2 + 1]! - p0[i * 2 + 1]!);
+      cnt++;
+    }
+    means.push(cnt > 0 ? sum / cnt : -1);
+  }
+  const min = Math.min(...means);
+  const ok = min > 0.02;
+  report(`${label} 冻结带检测`, ok, `各带平均位移 [${means.map((m) => m.toFixed(3)).join(', ')}](最低带阈 0.02)`);
+  sim.destroy();
+}
+
 function structureStats(pos: Float32Array, samples: number, rHalf: number): { nn: number; nbr: number } {
   const n = pos.length / 2;
   let nnSum = 0;
@@ -135,7 +199,7 @@ async function main() {
     const startB = (await dbg.start.read()) as Uint32Array;
     const fillB = (await dbg.fill.read()) as Uint32Array;
 
-    const gSz = Math.max(4, Math.ceil((2 * 1.3228756555322954) / 0.12));
+    const gSz = Math.max(4, Math.floor((2 * 1.3228756555322954) / 0.12));
     const cellOfT = (x: number, y: number) => {
       const cx = Math.min(Math.max(Math.floor((x + 1.3228756555322954) / (2 * 1.3228756555322954) * gSz), 0), gSz - 1);
       const cy = Math.min(Math.max(Math.floor((y + 1.3228756555322954) / (2 * 1.3228756555322954) * gSz), 0), gSz - 1);
@@ -206,6 +270,13 @@ async function main() {
   report('逐帧对比', true, await compareModes(30));
 
   // ④ 形态等价(300 帧后的结构统计)
+  // 先跑截断回归:28k(23×23 格)与 42k(用户事故量级)都必须全格覆盖、无冻结带
+  await scanInvariants('28k', CFG.count, CFG.rMax, 1);
+  await scanInvariants('28k', CFG.count, CFG.rMax, 120);
+  await scanInvariants('42k', 42_000, 0.16, 120);
+  await frozenBands('28k', CFG.count, CFG.rMax);
+  await frozenBands('42k', 42_000, 0.16);
+
   const t0 = performance.now();
   const gFuse = await runMode('grid', 100_000); // 禁用保险丝对照(应与默认一致:保险丝不触发)
   report('grid 无保险丝对照', true, `最近邻 ${gFuse.nn.toFixed(4)} · 邻居 ${gFuse.nbr.toFixed(1)}`);

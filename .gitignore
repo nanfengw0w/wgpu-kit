@@ -41,3 +41,4 @@ docs/validation/
 *.tgz
 tests/gpu/*.bundle.js
 gh-pages/
+docs/assets/

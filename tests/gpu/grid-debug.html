@@ -6,6 +6,11 @@
   <style>html, body { margin: 0; background: #0b0d12; color: #9aa; font: 13px/1.6 monospace; padding: 12px; }</style>
 </head>
 <body>
+  <script>
+    window.__boot = 'pending';
+    window.addEventListener('error', (e) => { window.__boot = 'error: ' + (e.message || e.type) + ' @' + (e.filename || '') + ':' + (e.lineno || ''); });
+    window.addEventListener('unhandledrejection', (e) => { window.__boot = 'rejection: ' + String(e.reason).slice(0, 200); });
+  </script>
   <h3>grid 内部状态诊断(random 预设 @28000)</h3>
   <pre id="out">运行中……</pre>
   <script type="module" src="./grid-debug.bundle.js"></script>

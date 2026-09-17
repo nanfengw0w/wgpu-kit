@@ -13,23 +13,66 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// src/core/codes.ts
+var ERR;
+var init_codes = __esm({
+  "src/core/codes.ts"() {
+    "use strict";
+    ERR = {
+      /** WebGPU is unavailable or the adapter could not be acquired */
+      WGPU_UNAVAILABLE: "ERR_WGPU_UNAVAILABLE",
+      /** WGSL compilation failed */
+      COMPILE: "ERR_COMPILE",
+      /** Invalid argument passed by the caller */
+      USAGE: "ERR_USAGE",
+      /** A required uniform field is missing or has an invalid value */
+      UNIFORM_FIELD: "ERR_UNIFORM_FIELD",
+      /** Uniform scalar types are not yet supported */
+      UNIFORM_UNSUPPORTED: "ERR_UNIFORM_UNSUPPORTED",
+      /** workgroupSize is outside the valid range */
+      WORKGROUP_SIZE: "ERR_WORKGROUP_SIZE",
+      /** A resource (Buffer) is missing from the resources map */
+      RESOURCE_MISSING: "ERR_RESOURCE_MISSING",
+      /** A resource type does not match the kernel declaration */
+      RESOURCE_TYPE: "ERR_RESOURCE_TYPE",
+      /** Resource lengths are inconsistent across state/inputs */
+      RESOURCE_LENGTH: "ERR_RESOURCE_LENGTH",
+      /** Buffer.create received an invalid kind or length */
+      BUFFER_CREATE: "ERR_BUFFER_CREATE",
+      /** Buffer.write type or component count mismatch */
+      BUFFER_WRITE: "ERR_BUFFER_WRITE",
+      /** MediaRecorder is unavailable or the recording failed */
+      MEDIA: "ERR_MEDIA",
+      /** timestamp-query is not supported on this device */
+      TIMESTAMP_UNSUPPORTED: "ERR_TIMESTAMP_UNSUPPORTED",
+      /** A generic library error that doesn't fit any specific code */
+      GENERIC: "ERR_GENERIC"
+    };
+  }
+});
+
 // src/core/errors.ts
 var WgpuKitError, WebGPUUnavailableError, CompileError, UsageError;
 var init_errors = __esm({
   "src/core/errors.ts"() {
     "use strict";
+    init_codes();
+    init_codes();
     WgpuKitError = class extends Error {
-      constructor(message) {
+      /** Stable error code, e.g. 'ERR_WGPU_UNAVAILABLE' — safe to switch on. */
+      code;
+      constructor(code, message) {
         super(message);
         this.name = new.target.name;
+        this.code = code;
       }
     };
     WebGPUUnavailableError = class extends WgpuKitError {
       constructor(reason) {
         super(
-          `\u5F53\u524D\u73AF\u5883\u4E0D\u53EF\u7528 WebGPU: ${reason}
-  \u6392\u67E5:\u2460 \u6D4F\u89C8\u5668\u9700 Chrome/Edge 113+ \u6216 Safari 18+;\u2461 \u65E0\u5934\u73AF\u5883\u9700\u5F00\u542F WebGPU;\u2462 \u68C0\u67E5 GPU \u9A71\u52A8\u4E0E\u786C\u4EF6\u52A0\u901F\u8BBE\u7F6E\u3002
-  \u53EF\u7528 navigator.gpu \u662F\u5426\u5B58\u5728\u5FEB\u901F\u5224\u65AD\u3002`
+          ERR.WGPU_UNAVAILABLE,
+          `WebGPU is unavailable: ${reason}
+  Check: 1) Use Chrome/Edge 113+ or Safari 18+. 2) Enable WebGPU in headless mode. 3) Verify GPU drivers and hardware acceleration.`
         );
       }
     };
@@ -37,14 +80,17 @@ var init_errors = __esm({
       constructor(kernelName, messages, userCodeOffset) {
         const mapped = messages.map((m) => {
           const userLine = m.line - userCodeOffset;
-          const where = userLine > 0 ? `\u7528\u6237\u4EE3\u7801\u7B2C ${userLine} \u884C` : `\u751F\u6210\u4EE3\u7801\u7B2C ${m.line} \u884C(\u5E93\u7684\u95EE\u9898,\u6B22\u8FCE\u62A5 issue)`;
+          const where = userLine > 0 ? `your code, line ${userLine}` : `generated code, line ${m.line} (library issue \u2014 please file an issue)`;
           return `  ${where}: ${m.msg}`;
         }).join("\n");
-        super(`kernel "${kernelName}" WGSL \u7F16\u8BD1\u5931\u8D25:
+        super(ERR.COMPILE, `kernel "${kernelName}" WGSL compilation failed:
 ${mapped}`);
       }
     };
     UsageError = class extends WgpuKitError {
+      constructor(code, message) {
+        super(code, message);
+      }
     };
   }
 });
@@ -82,7 +128,7 @@ var init_context = __esm({
       }
       static async #create() {
         if (typeof navigator === "undefined" || !("gpu" in navigator) || !navigator.gpu) {
-          throw new WebGPUUnavailableError("navigator.gpu \u4E0D\u5B58\u5728");
+          throw new WebGPUUnavailableError("navigator.gpu is not available");
         }
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
         if (!adapter) throw new WebGPUUnavailableError("requestAdapter() \u8FD4\u56DE null");
@@ -143,6 +189,7 @@ var Buffer2 = class _Buffer {
   #ctx;
   #byteLength;
   #stride;
+  #reading = null;
   #staging = null;
   constructor(ctx, kind, length, gpuBuffer) {
     this.#ctx = ctx;
@@ -154,10 +201,10 @@ var Buffer2 = class _Buffer {
   }
   static async create(kind, length) {
     if (!Number.isInteger(length) || length <= 0) {
-      throw new UsageError(`Buffer \u957F\u5EA6\u5FC5\u987B\u662F\u6B63\u6574\u6570,\u6536\u5230: ${String(length)}`);
+      throw new UsageError(ERR.BUFFER_CREATE, `Buffer length must be a positive integer, got: ${String(length)}`);
     }
     const def = TYPES[kind];
-    if (!def) throw new UsageError(`\u672A\u77E5\u7C7B\u578B "${String(kind)}",\u53EF\u7528: ${Object.keys(TYPES).join(", ")}`);
+    if (!def) throw new UsageError(ERR.BUFFER_CREATE, `Unknown Buffer kind "${String(kind)}". Available: ${Object.keys(TYPES).join(", ")}`);
     const ctx = await GpuContext.get();
     const gpuBuffer = ctx.device.createBuffer({
       size: length * def.stride,
@@ -171,11 +218,11 @@ var Buffer2 = class _Buffer {
     const def = TYPES[this.kind];
     const ctor = TYPED_CTORS[def.typed];
     if (!(data instanceof ctor)) {
-      throw new UsageError(`Buffer<${this.kind}>.write \u9700\u8981 ${def.typed},\u6536\u5230 ${data.constructor?.name ?? typeof data}`);
+      throw new UsageError(ERR.BUFFER_WRITE, `Buffer<${this.kind}>.write expects ${def.typed}, got ${data.constructor?.name ?? typeof data}`);
     }
     const expected = this.length * def.comps;
     if (data.length !== expected) {
-      throw new UsageError(`Buffer<${this.kind}>[${this.length}].write \u9700\u8981 ${expected} \u4E2A\u5206\u91CF,\u6536\u5230 ${data.length}`);
+      throw new UsageError(ERR.BUFFER_WRITE, `Buffer<${this.kind}>[${this.length}].write expects ${expected} components, got ${data.length}`);
     }
     if (def.stride === def.size || def.comps === 1) {
       this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, data);
@@ -191,6 +238,15 @@ var Buffer2 = class _Buffer {
   }
   /** GPU → CPU:内部 staging buffer + mapAsync,mapAsync 的异步陷阱由库承担 */
   async read() {
+    if (this.#reading) return this.#reading;
+    this.#reading = this.#doRead();
+    try {
+      return await this.#reading;
+    } finally {
+      this.#reading = null;
+    }
+  }
+  async #doRead() {
     const def = TYPES[this.kind];
     if (!this.#staging) {
       this.#staging = this.#ctx.device.createBuffer({
@@ -243,7 +299,7 @@ var PingPong = class _PingPong {
   }
   static async create(kinds, length) {
     const names = Object.keys(kinds);
-    if (names.length === 0) throw new Error("PingPong \u81F3\u5C11\u9700\u8981\u4E00\u4E2A\u5B57\u6BB5");
+    if (names.length === 0) throw new Error("PingPong requires at least one field");
     const make = async () => {
       const side = {};
       for (const name of names) side[name] = await Buffer2.create(kinds[name], length);
@@ -655,7 +711,7 @@ init_context();
 init_errors();
 var OP_IDS = { grayscale: 0, invert: 1, edge: 2, blur: 3, sharpen: 4, brightness: 5, contrast: 6 };
 async function applyImage(source, target, ops) {
-  if (ops.length === 0) throw new Error("applyImage \u9700\u8981\u81F3\u5C11\u4E00\u4E2A\u7B97\u5B50");
+  if (ops.length === 0) throw new Error("applyImage requires at least one operator");
   const width = "naturalWidth" in source ? source.naturalWidth : source.width;
   const height = "naturalHeight" in source ? source.naturalHeight : source.height;
   const ctx = await GpuContext.get();

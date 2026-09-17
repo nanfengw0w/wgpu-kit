@@ -44,9 +44,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 
 export function gridScanWgsl(): string {
-  // 两级扫描:① 各 workgroup 扫自己的 256-cell 块,块总和写入 blockSums;
-  // ② 单 workgroup 扫 blockSums(最多 SCAN_WORKGROUP 个块 = 65536 cell);
-  // ③ 各 workgroup 加上本块基址。256×256=65536 cell 内 O(1) 轮次,不再随规模线性退化。
+  // 单 workgroup 分块扫描:256-cell 块循环推进,块内 Hillis-Steele,块间用
+  // workgroup 级 carry 串接。此前版本按多 workgroup 分两级写,但 dispatch(1)
+  // 只有 block 0 在跑 —— 256 格之外 cellStart 永远是 0、cellCount 永不清零,
+  // 对应粒子受力恒零被摩擦冻住(屏幕上出现水平"冻结带")。改成单 workgroup
+  // 循环后 barrier 是合法同步,正确性不依赖任何跨 workgroup 时序;
+  // cell 上限 65536 = 256 块,每块一轮微秒级,性能无虞。顺带把 cellCount
+  // 归零给下一帧。
   return /* wgsl */ `
 struct Params {
   count: u32, _pad0: u32,
@@ -58,63 +62,48 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read_write> cellStart: array<u32>;
 @group(0) @binding(3) var<storage, read_write> cellFill: array<u32>;
-@group(0) @binding(4) var<storage, read_write> blockSums: array<u32>;
 
 var<workgroup> partial: array<u32, ${SCAN_WORKGROUP}>;
+var<workgroup> carry: u32;
 
 @compute @workgroup_size(${SCAN_WORKGROUP})
-fn main(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u) {
+fn main(@builtin(local_invocation_id) lid: vec3u) {
   let tid = lid.x;
   let wg = ${SCAN_WORKGROUP}u;
-  let base = wid.x * wg;
   let cells = params.cells;
-
-  // ① 块内 Hillis-Steele(块不足时以 0 填充)
-  let v0 = select(0u, atomicLoad(&cellCount[base + tid]), base + tid < cells);
-  partial[tid] = v0;
+  let numChunks = (cells + wg - 1u) / wg;
+  if (tid == 0u) { carry = 0u; }
   workgroupBarrier();
-  var offset = 1u;
-  loop {
-    if (offset >= wg) { break; }
-    var v = 0u;
-    if (tid >= offset) { v = partial[tid - offset]; }
+  for (var ch = 0u; ch < numChunks; ch++) {
+    let idx = ch * wg + tid;
+    let inRange = idx < cells;
+    let v0 = select(0u, atomicLoad(&cellCount[idx]), inRange);
+    partial[tid] = v0;
     workgroupBarrier();
-    if (tid >= offset) { partial[tid] = partial[tid] + v; }
-    workgroupBarrier();
-    offset = offset << 1u;
-  }
-  // 含前缀 → 排他:start = 块内前缀(不含自身),fill = start + count
-  let myCount = v0;
-  let myPrefix = select(partial[tid - 1u], 0u, tid == 0u);
-  if (base + tid < cells) {
-    cellStart[base + tid] = myPrefix;
-    cellFill[base + tid] = myPrefix + myCount;
-  }
-  // 块总和 → blockSums(含)
-  if (tid == 0u) { blockSums[wid.x] = partial[wg - 1u]; }
-  workgroupBarrier();
-
-  // ② 块间扫描(单 workgroup;块数 = ceil(cells/wg) ≤ SCAN_WORKGROUP)
-  if (wid.x == 0u) {
-    var off = 1u;
+    // 块内含前缀(Hillis-Steele)
+    var offset = 1u;
     loop {
-      if (off >= wg) { break; }
+      if (offset >= wg) { break; }
       var v = 0u;
-      if (tid >= off) { v = blockSums[tid - off]; }
+      if (tid >= offset) { v = partial[tid - offset]; }
       workgroupBarrier();
-      if (tid >= off) { blockSums[tid] = blockSums[tid] + v; }
+      if (tid >= offset) { partial[tid] = partial[tid] + v; }
       workgroupBarrier();
-      off = off << 1u;
+      offset = offset << 1u;
     }
-  }
-  workgroupBarrier();
-
-  // ③ 加块基址;cellCount 归零供下一帧
-  let blockBase = select(0u, blockSums[wid.x - 1u], wid.x > 0u);
-  if (base + tid < cells) {
-    cellStart[base + tid] = cellStart[base + tid] + blockBase;
-    cellFill[base + tid] = cellFill[base + tid] + blockBase;
-    atomicStore(&cellCount[base + tid], 0u);
+    // 排他:start = carry + 块内前缀(不含自身);fill 是 scatter 的原子填充
+    // 游标,初始化为段起点(与通用包 NeighborGrid 同语义)——scatter 填完一格
+    // 后 fill 恰好 = start + count,力核读 [start, fill) 才不会多扫下一格的粒子。
+    if (inRange) {
+      let excl = partial[tid] - v0;
+      cellStart[idx] = carry + excl;
+      cellFill[idx] = carry + excl;
+      atomicStore(&cellCount[idx], 0u);
+    }
+    // 所有线程读完 partial/写完 carry 后才能进入下一块
+    workgroupBarrier();
+    if (tid == wg - 1u) { carry = carry + partial[wg - 1u]; }
+    workgroupBarrier();
   }
 }
 `;
