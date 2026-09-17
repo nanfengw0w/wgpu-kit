@@ -115,11 +115,10 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
   // —— grid:4 kernel 流水线 ——
   interface GridState {
     size: number;
-    cells: number;
     count: Buffer; start: Buffer; fill: Buffer; order: Buffer; partial: Buffer; sortedPos: Buffer; sortedSp: Buffer; blockSums: Buffer;
-    pCounts: GPUComputePipeline; pScanBlocks: GPUComputePipeline; pScanBases: GPUComputePipeline; pScanApply: GPUComputePipeline; pScatter: GPUComputePipeline; pForceCell: GPUComputePipeline; pForceInt: GPUComputePipeline;
+    pCounts: GPUComputePipeline; pScan: GPUComputePipeline; pScatter: GPUComputePipeline; pForceCell: GPUComputePipeline; pForceInt: GPUComputePipeline;
     bgCountsA: GPUBindGroup; bgCountsB: GPUBindGroup;
-    bgScanBlocks: GPUBindGroup; bgScanBases: GPUBindGroup; bgScanApply: GPUBindGroup;
+    bgScan: GPUBindGroup;
     bgScatterA: GPUBindGroup; bgScatterB: GPUBindGroup;
     bgForceCellAB: GPUBindGroup; bgForceCellBA: GPUBindGroup;
     bgIntegrateAB: GPUBindGroup; bgIntegrateBA: GPUBindGroup;
@@ -146,9 +145,7 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
     const mScatter = await compile(gridScatterWgsl(), 'grid-scatter');
     const mForce = await compile(gridForceWgsl(4), 'grid-force');
     const pCounts = await makePipeline(mCounts, 'main', 'grid-counts');
-    const pScanBlocks = await makePipeline(mScan, 'main_scan_blocks', 'grid-scan-blocks');
-    const pScanBases = await makePipeline(mScan, 'main_scan_bases', 'grid-scan-bases');
-    const pScanApply = await makePipeline(mScan, 'main_scan_apply', 'grid-scan-apply');
+    const pScan = await makePipeline(mScan, 'main', 'grid-scan');
     const pScatter = await makePipeline(mScatter, 'main', 'grid-scatter');
     const pForceCell = await makePipeline(mForce, 'main_force_cell', 'grid-force-cell');
     const pForceInt = await makePipeline(mForce, 'main_force_integrate', 'grid-force-integrate');
@@ -165,28 +162,8 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         { binding: 2, resource: { buffer: count.gpuBuffer } },
       ],
     });
-    const bgScanBlocks = device.createBindGroup({
-      layout: pScanBlocks.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: { buffer: count.gpuBuffer } },
-        { binding: 2, resource: { buffer: start.gpuBuffer } },
-        { binding: 3, resource: { buffer: fill.gpuBuffer } },
-        { binding: 4, resource: { buffer: blockSums.gpuBuffer } },
-      ],
-    });
-    const bgScanBases = device.createBindGroup({
-      layout: pScanBases.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: { buffer: count.gpuBuffer } },
-        { binding: 2, resource: { buffer: start.gpuBuffer } },
-        { binding: 3, resource: { buffer: fill.gpuBuffer } },
-        { binding: 4, resource: { buffer: blockSums.gpuBuffer } },
-      ],
-    });
-    const bgScanApply = device.createBindGroup({
-      layout: pScanApply.getBindGroupLayout(0),
+    const bgScan = device.createBindGroup({
+      layout: pScan.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uniform } },
         { binding: 1, resource: { buffer: count.gpuBuffer } },
@@ -243,11 +220,10 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
     };
     const state = {
       size,
-      cells,
       count, start, fill, order, partial, sortedPos, sortedSp, blockSums,
-      pCounts, pScanBlocks, pScanBases, pScanApply, pScatter, pForceCell, pForceInt,
+      pCounts, pScan, pScatter, pForceCell, pForceInt,
       bgCountsA: bgCounts(sideA.pos), bgCountsB: bgCounts(sideB.pos),
-      bgScanBlocks, bgScanBases, bgScanApply,
+      bgScan,
       bgScatterA: bgScatter(sideA.pos), bgScatterB: bgScatter(sideB.pos),
       bgForceCellAB: bgForceCell(sideA.pos), bgForceCellBA: bgForceCell(sideB.pos),
       bgIntegrateAB: bgIntegrate(sideA, sideB), bgIntegrateBA: bgIntegrate(sideB, sideA),
@@ -316,29 +292,38 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         grid.bgForceCellRebuild(sideA.pos);
         gridBindGroupsDirty = false;
       }
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
       if (grid) {
-        // 五段各自独立 encoder+submit:WebGPU 同队列按提交序执行,
-        // pass 边界保证跨 workgroup 可见性(单 pass 内多 dispatch 曾实测读到旧数据)
-        const runPass = (pipeline: GPUComputePipeline, bg: GPUBindGroup, wgs: number) => {
-          const e = device.createCommandEncoder();
-          const p = e.beginComputePass();
-          p.setPipeline(pipeline);
-          p.setBindGroup(0, bg);
-          p.dispatchWorkgroups(wgs);
-          p.end();
-          device.queue.submit([e.finish()]);
-        };
+        // 实测:同一 compute pass 内连续 dispatch 之间,后续 kernel 读到的可能
+        // 是前一 kernel 的旧数据(Dawn/Windows,partial 竞态)——各段独立 pass
+        // 提交以保证可见性。
+        // 单 encoder、五个独立 pass:同一 encoder 内 pass 天然按序执行且可见,
+        // 免掉每帧 2 次额外 enc.finish()/submit(评审:提交间隔调度空隙)
+        pass.setPipeline(grid.pCounts);
+        pass.setBindGroup(0, useAB ? grid.bgCountsA : grid.bgCountsB);
+        pass.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
+        pass.setPipeline(grid.pScan);
+        pass.setBindGroup(0, grid.bgScan);
+        pass.dispatchWorkgroups(1);
+        pass.setPipeline(grid.pScatter);
+        pass.setBindGroup(0, useAB ? grid.bgScatterA : grid.bgScatterB);
+        pass.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
+        pass.end();
 
-        const nCellWg = Math.ceil(grid.cells / 256);
-        runPass(grid.pCounts, useAB ? grid.bgCountsA : grid.bgCountsB, Math.ceil(cfg.count / WORKGROUP));
-        runPass(grid.pScanBlocks, grid.bgScanBlocks, nCellWg);
-        runPass(grid.pScanBases, grid.bgScanBases, 1);
-        runPass(grid.pScatter, useAB ? grid.bgScatterA : grid.bgScatterB, Math.ceil(cfg.count / WORKGROUP));
-        runPass(grid.pForceCell, useAB ? grid.bgForceCellAB : grid.bgForceCellBA, Math.ceil((cfg.count * 9) / WORKGROUP));
-        runPass(grid.pForceInt, useAB ? grid.bgIntegrateAB : grid.bgIntegrateBA, Math.ceil(cfg.count / WORKGROUP));
+        const passB = enc.beginComputePass();
+        passB.setPipeline(grid.pForceCell);
+        passB.setBindGroup(0, useAB ? grid.bgForceCellAB : grid.bgForceCellBA);
+        passB.dispatchWorkgroups(Math.ceil((cfg.count * 9) / WORKGROUP));
+        passB.end();
+
+        const passC = enc.beginComputePass();
+        passC.setPipeline(grid.pForceInt);
+        passC.setBindGroup(0, useAB ? grid.bgIntegrateAB : grid.bgIntegrateBA);
+        passC.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
+        passC.end();
+        device.queue.submit([enc.finish()]);
       } else {
-        const enc = device.createCommandEncoder();
-        const pass = enc.beginComputePass();
         pass.setPipeline(simPipeline!);
         pass.setBindGroup(0, useAB ? bgAB! : bgBA!);
         pass.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));

@@ -4,7 +4,7 @@
  */
 
 import { GpuContext } from './core/context.ts';
-import { UsageError } from './core/errors.ts';
+import { ERR, UsageError } from './core/errors.ts';
 
 /** 时间戳查询封装:测量一段 GPU 工作的真实耗时(毫秒)。
  *  Chrome/Edge 支持 timestamp-query;不支持的浏览器 reject。 */
@@ -12,7 +12,7 @@ export async function timeGpu(fn: (ctx: GpuContext) => void | Promise<void>): Pr
   const ctx = await GpuContext.get();
   const device = ctx.device;
   const featureOk = device.features.has('timestamp-query');
-  if (!featureOk) throw new UsageError('timestamp-query 在当前设备不可用(需 Chrome/Edge + 支持时间戳的 GPU)');
+  if (!featureOk) throw new UsageError(ERR.TIMESTAMP_UNSUPPORTED, 'timestamp-query is not supported on this device (requires Chrome/Edge + a GPU with timestamp support)');
 
   const QUERY_POOL = 2;
   const querySet = device.createQuerySet({ type: 'timestamp', count: QUERY_POOL });

@@ -36,7 +36,7 @@ export class CanvasRecorder {
 
   constructor() {
     const mime = pickMime();
-    if (!mime) throw new Error('当前环境不支持 MediaRecorder 录制(无可用编码)');
+    if (!mime) throw new Error('MediaRecorder is not supported in this environment');
     this.#mime = mime;
   }
 
@@ -44,7 +44,7 @@ export class CanvasRecorder {
   get recording(): boolean { return this.#recorder?.state === 'recording'; }
 
   start(canvas: HTMLCanvasElement, videoBitsPerSecond = 12_000_000): void {
-    if (this.#recorder) throw new Error('已在录制中');
+    if (this.#recorder) throw new Error('Recording already in progress');
     const stream = canvas.captureStream(60);
     this.#chunks = [];
     this.#recorder = new MediaRecorder(stream, { mimeType: this.#mime, videoBitsPerSecond });
@@ -61,7 +61,7 @@ export class CanvasRecorder {
         const blob = new Blob(this.#chunks, { type: this.#mime });
         this.#recorder = null;
         if (blob.size === 0) {
-          err(new Error(`录制产物为空(${this.#mime});编码器可能不可用,换浏览器或网络前重试`));
+          err(new Error(`Recording produced 0 bytes (${this.#mime}); encoder may be unavailable`));
           return;
         }
         ok({ blob, mimeType: this.#mime, seconds: (performance.now() - this.#startedAt) / 1000, bytes: blob.size });

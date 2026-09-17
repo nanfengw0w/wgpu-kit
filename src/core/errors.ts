@@ -1,42 +1,61 @@
-/** 错误体系:所有错误说人话,给出定位与修复建议(章程原则 3)。 */
+import { ERR, type ErrorCode } from './codes.ts';
 
+/**
+ * Error hierarchy for wgpu-kit. All errors extend WgpuKitError and carry a
+ * stable machine-readable `code` for programmatic handling.
+ */
 export class WgpuKitError extends Error {
-  constructor(message: string) {
+  /** Stable error code, e.g. 'ERR_WGPU_UNAVAILABLE' — safe to switch on. */
+  readonly code: ErrorCode;
+  constructor(code: ErrorCode, message: string) {
     super(message);
     this.name = new.target.name;
+    this.code = code;
   }
 }
 
-/** 环境无 WebGPU / 拿不到 adapter。 */
+/** WebGPU is unavailable or the adapter could not be acquired. */
 export class WebGPUUnavailableError extends WgpuKitError {
   constructor(reason: string) {
     super(
-      `当前环境不可用 WebGPU: ${reason}\n` +
-      '  排查:① 浏览器需 Chrome/Edge 113+ 或 Safari 18+;② 无头环境需开启 WebGPU;③ 检查 GPU 驱动与硬件加速设置。\n' +
-      '  可用 navigator.gpu 是否存在快速判断。',
+      ERR.WGPU_UNAVAILABLE,
+      `WebGPU is unavailable: ${reason}\n` +
+      '  Check: 1) Use Chrome/Edge 113+ or Safari 18+. 2) Enable WebGPU in headless mode. 3) Verify GPU drivers and hardware acceleration.',
     );
   }
 }
 
-/** WGSL 编译错误,行号已映射回用户代码。 */
+/** WGSL compilation failed. Line numbers are mapped back to user code. */
 export class CompileError extends WgpuKitError {
   constructor(kernelName: string, messages: readonly { line: number; msg: string }[], userCodeOffset: number) {
     const mapped = messages
       .map((m) => {
         const userLine = m.line - userCodeOffset;
-        const where = userLine > 0 ? `用户代码第 ${userLine} 行` : `生成代码第 ${m.line} 行(库的问题,欢迎报 issue)`;
+        const where = userLine > 0 ? `your code, line ${userLine}` : `generated code, line ${m.line} (library issue — please file an issue)`;
         return `  ${where}: ${m.msg}`;
       })
       .join('\n');
-    super(`kernel "${kernelName}" WGSL 编译失败:\n${mapped}`);
+    super(ERR.COMPILE, `kernel "${kernelName}" WGSL compilation failed:\n${mapped}`);
   }
 }
 
-/** 调用方使用不当(缺资源/类型不匹配/长度不一致等)。 */
-export class UsageError extends WgpuKitError {}
+/** Caller passed an invalid argument (missing resource, type mismatch, bad length, etc.). */
+export class UsageError extends WgpuKitError {
+  constructor(code: ErrorCode, message: string) {
+    super(code, message);
+  }
+}
 
+/** Compute pipeline creation failed validation (e.g. too many storage buffers). */
+export class PipelineError extends WgpuKitError {
+  constructor(label: string, detail: string) {
+    super(ERR.GENERIC, `compute pipeline "${label}" creation failed: ${detail}`);
+  }
+}
 
-/** 创建 compute 管线并用 pushErrorScope 捕获异步校验错误(超限等),把"黑屏刷屏"变成显式报错 */
+export { ERR, type ErrorCode } from './codes.ts';
+
+/** Create a compute pipeline with pushErrorScope to surface async validation errors. */
 export async function createComputePipelineChecked(
   device: GPUDevice,
   module: GPUShaderModule,
@@ -47,8 +66,7 @@ export async function createComputePipelineChecked(
   const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint } });
   const err = await device.popErrorScope();
   if (err) {
-    throw new WgpuKitError(`compute 管线 "${label}" 创建失败: ${err.message}
-  常见原因:storage buffer 数超过每阶段上限(可向本库提 issue 申请 limits 支持)`);
+    throw new PipelineError(label, err.message);
   }
   return pipeline;
 }

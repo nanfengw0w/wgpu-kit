@@ -103,5 +103,10 @@
   "bugs": {
     "url": "https://github.com/nanfengw0w/wgpu-kit/issues"
   },
-  "homepage": "https://github.com/nanfengw0w/wgpu-kit#readme"
+  "homepage": "https://github.com/nanfengw0w/wgpu-kit#readme",
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
 }

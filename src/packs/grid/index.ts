@@ -47,8 +47,8 @@ const USIZE = 32;
 
 export async function createNeighborGrid(config: NeighborGridConfig): Promise<NeighborGrid> {
   const { count, worldHalf, cellSize, workgroupSize = WG } = config;
-  if (!Number.isInteger(count) || count <= 0) throw new Error(`count 必须是正整数,收到 ${String(count)}`);
-  if (!(cellSize > 0)) throw new Error(`cellSize 必须为正,收到 ${String(cellSize)}`);
+  if (!Number.isInteger(count) || count <= 0) throw new Error(`count must be a positive integer, got ${String(count)}`);
+  if (!(cellSize > 0)) throw new Error(`cellSize must be positive, got ${String(cellSize)}`);
 
   const gridSize = Math.max(1, Math.ceil((2 * worldHalf) / cellSize));
   const cells = gridSize * gridSize;

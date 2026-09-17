@@ -32,7 +32,7 @@ export class GpuContext {
 
   static async #create(): Promise<GpuContext> {
     if (typeof navigator === 'undefined' || !('gpu' in navigator) || !navigator.gpu) {
-      throw new WebGPUUnavailableError('navigator.gpu 不存在');
+      throw new WebGPUUnavailableError('navigator.gpu is not available');
     }
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) throw new WebGPUUnavailableError('requestAdapter() 返回 null');
