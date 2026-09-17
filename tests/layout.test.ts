@@ -47,9 +47,9 @@ describe('packUniform: 小端打包与校验', () => {
 
   it('缺字段/非法值报错', () => {
     const l = planUniform([['dt', 'f32']]);
-    expect(() => packUniform(l, {})).toThrow(/缺少 uniform/);
-    expect(() => packUniform(l, { dt: NaN })).toThrow(/有限数字/);
-    expect(() => packUniform(l, { dt: Infinity })).toThrow(/有限数字/);
+    expect(() => packUniform(l, {})).toThrow(/Missing uniform value/);
+    expect(() => packUniform(l, { dt: NaN })).toThrow(/must be a finite number/);
+    expect(() => packUniform(l, { dt: Infinity })).toThrow(/must be a finite number/);
   });
 
   it('多余字段被忽略', () => {

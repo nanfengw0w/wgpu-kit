@@ -22,7 +22,7 @@ export class PingPong<K extends string> {
 
   static async create<K extends string>(kinds: Record<K, ScalarKind>, length: number): Promise<PingPong<K>> {
     const names = Object.keys(kinds) as K[];
-    if (names.length === 0) throw new Error('PingPong 至少需要一个字段');
+    if (names.length === 0) throw new Error('PingPong requires at least one field');
     const make = async (): Promise<Record<K, Buffer>> => {
       const side = {} as Record<K, Buffer>;
       for (const name of names) side[name] = await Buffer.create(kinds[name], length);

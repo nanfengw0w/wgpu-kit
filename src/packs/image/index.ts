@@ -30,7 +30,7 @@ export async function applyImage(
   target: HTMLCanvasElement,
   ops: ImageOp[],
 ): Promise<ApplyImageResult> {
-  if (ops.length === 0) throw new Error('applyImage 需要至少一个算子');
+  if (ops.length === 0) throw new Error('applyImage requires at least one operator');
   const width = 'naturalWidth' in source ? source.naturalWidth : source.width;
   const height = 'naturalHeight' in source ? source.naturalHeight : source.height;
   const ctx = await GpuContext.get();

@@ -1,3 +1,4 @@
+import { ERR, UsageError } from './errors.ts';
 /** WGSL 类型布局表:尺寸、对齐、组件数、对应的 TypedArray。库替用户算字节数的根据。 */
 export type ScalarKind =
   | 'f32' | 'i32' | 'u32'
@@ -75,12 +76,12 @@ export function packUniform(layout: UniformLayout, values: Readonly<Record<strin
   for (const f of layout.fields) {
     const pack = PACKERS[f.kind];
     if (!pack) {
-      throw new Error(`uniform 字段 ${f.name} 的类型 ${f.kind} 暂不支持(当前仅支持标量)`);
+      throw new UsageError(ERR.UNIFORM_UNSUPPORTED, `Uniform field "${f.name}" has unsupported type "${f.kind}". Only scalars are currently supported.`);
     }
     const v = values[f.name];
-    if (v === undefined) throw new Error(`缺少 uniform 值: ${f.name}`);
+    if (v === undefined) throw new UsageError(ERR.UNIFORM_FIELD, `Missing uniform value for "${f.name}"`);
     if (typeof v !== 'number' || !Number.isFinite(v)) {
-      throw new Error(`uniform 值 ${f.name} 必须是有限数字,收到: ${String(v)}`);
+      throw new UsageError(ERR.UNIFORM_FIELD, `Uniform value for "${f.name}" must be a finite number, got: ${String(v)}`);
     }
     pack(view, f.offset, v);
   }
@@ -93,12 +94,12 @@ export function packUniformInto(target: ArrayBuffer, layout: UniformLayout, valu
   for (const f of layout.fields) {
     const pack = PACKERS[f.kind];
     if (!pack) {
-      throw new Error(`uniform 字段 ${f.name} 的类型 ${f.kind} 暂不支持(当前仅支持标量)`);
+      throw new UsageError(ERR.UNIFORM_UNSUPPORTED, `Uniform field "${f.name}" has unsupported type "${f.kind}". Only scalars are currently supported.`);
     }
     const v = values[f.name];
-    if (v === undefined) throw new Error(`缺少 uniform 值: ${f.name}`);
+    if (v === undefined) throw new UsageError(ERR.UNIFORM_FIELD, `Missing uniform value for "${f.name}"`);
     if (typeof v !== 'number' || !Number.isFinite(v)) {
-      throw new Error(`uniform 值 ${f.name} 必须是有限数字,收到: ${String(v)}`);
+      throw new UsageError(ERR.UNIFORM_FIELD, `Uniform value for "${f.name}" must be a finite number, got: ${String(v)}`);
     }
     pack(view, f.offset, v);
   }

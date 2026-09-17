@@ -1,5 +1,5 @@
 import { GpuContext } from './context.ts';
-import { CompileError, UsageError } from './errors.ts';
+import { CompileError, ERR, UsageError } from './errors.ts';
 
 /**
  * rawKernel —— 逃生舱(章程原则 1)。
@@ -11,13 +11,13 @@ export interface RawKernel {
 }
 
 export function rawKernel(code: string, entryPoint = 'main', label = 'rawKernel'): RawKernel {
-  if (typeof code !== 'string' || code.trim().length === 0) throw new UsageError('rawKernel 需要 WGSL 代码');
+  if (typeof code !== 'string' || code.trim().length === 0) throw new UsageError(ERR.USAGE, 'rawKernel requires WGSL code');
   let pipelinePromise: Promise<GPUComputePipeline> | null = null;
 
   return {
     async run(entries: GPUBindGroupEntry[], workgroups: number): Promise<void> {
       if (!Number.isInteger(workgroups) || workgroups < 1) {
-        throw new UsageError(`rawKernel.run 的 workgroups 必须是正整数,收到 ${String(workgroups)}`);
+        throw new UsageError(ERR.USAGE, `rawKernel.run workgroups must be a positive integer, got ${String(workgroups)}`);
       }
       const ctx = await GpuContext.get();
       if (!pipelinePromise) {

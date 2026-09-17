@@ -1,7 +1,7 @@
 import { planUniform, packUniformInto, TYPES, type ScalarKind, type UniformLayout } from './layout.ts';
 import { GpuContext } from './context.ts';
 import { Buffer } from './buffer.ts';
-import { CompileError, UsageError } from './errors.ts';
+import { CompileError, ERR, UsageError } from './errors.ts';
 
 /**
  * elementKernel —— wgpu-kit 的心脏。
@@ -68,23 +68,23 @@ export function generateElementKernel(spec: ElementKernelSpec): {
   const name = spec.name ?? 'kernel';
   const workgroupSize = spec.workgroupSize ?? 64;
   if (!Number.isInteger(workgroupSize) || workgroupSize < 1 || workgroupSize > 512) {
-    throw new UsageError(`workgroupSize 必须在 1..512,收到: ${String(workgroupSize)}`);
+    throw new UsageError(ERR.WORKGROUP_SIZE, `workgroupSize must be in 1..512, got: ${String(workgroupSize)}`);
   }
   const state = Object.entries(spec.state ?? {});
   const inputs = Object.entries(spec.inputs ?? {});
   const uniforms = Object.entries(spec.uniforms ?? {});
   if (state.length + inputs.length === 0) {
-    throw new UsageError(`elementKernel "${name}" 至少需要一个 state 或 inputs 字段`);
+    throw new UsageError(ERR.RESOURCE_MISSING, `elementKernel "${name}" requires at least one state or inputs field`);
   }
   for (const [uName] of uniforms) {
-    if (RESERVED.has(uName)) throw new UsageError(`uniform 名 "${uName}" 是保留名(count 由库自动注入)`);
+    if (RESERVED.has(uName)) throw new UsageError(ERR.USAGE, `uniform name "${uName}" is reserved (count is auto-injected by the library)`);
   }
   const seen = new Set([...state, ...inputs, ...uniforms].map(([n]) => n));
   if (seen.size !== state.length + inputs.length + uniforms.length) {
-    throw new UsageError(`elementKernel "${name}" 的 state/inputs/uniforms 存在重名字段`);
+    throw new UsageError(ERR.USAGE, `elementKernel "${name}" has duplicate field names across state/inputs/uniforms`);
   }
   if (typeof spec.code !== 'string' || spec.code.trim().length === 0) {
-    throw new UsageError(`elementKernel "${name}" 缺少 code(用户 WGSL 函数)`);
+    throw new UsageError(ERR.USAGE, `elementKernel "${name}" is missing code (user WGSL function)`);
   }
 
   const uniformEntries: Array<readonly [string, ScalarKind]> = [...uniforms, ['count', 'u32']];
@@ -138,7 +138,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
 
   let pipelinePromise: Promise<GPUComputePipeline> | null = null;
   let cachedCtx: GpuContext | null = null; // 首帧后缓存为普通引用
-  const bindGroupCache = new Map<number, GPUBindGroup>();
+  const bindGroupCache = new Map<number, { bg: GPUBindGroup; ids: readonly number[] }>();
   let uniformBuffer: GPUBuffer | null = null;
 
   const compilePipeline = async (): Promise<GPUComputePipeline> => {
@@ -201,14 +201,14 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       for (let i = 0; i < orderedFields.length; i++) {
         const f = orderedFields[i]!;
         const buf = resources[f.key];
-        if (!buf) throw new UsageError(`kernel "${normalized.name}".run 缺少资源 "${f.key}"`);
+        if (!buf) throw new UsageError(ERR.RESOURCE_MISSING, `kernel "${normalized.name}".run is missing resource "${f.key}"`);
         const want = expectedKinds.get(f.key);
         if (buf.kind !== want) {
-          throw new UsageError(`资源 "${f.key}" 类型不匹配: 需要 ${want},收到 ${buf.kind}`);
+          throw new UsageError(ERR.RESOURCE_TYPE, `Resource "${f.key}" type mismatch: expected ${want}, got ${buf.kind}`);
         }
         if (count === -1) { count = buf.length; firstKey = f.key; }
         else if (buf.length !== count) {
-          throw new UsageError(`资源 "${f.key}" 长度 ${buf.length} 与 "${firstKey}" 的 ${count} 不一致`);
+          throw new UsageError(ERR.RESOURCE_LENGTH, `Resource "${f.key}" length ${buf.length} does not match "${firstKey}" length ${count}`);
         }
         ordered.push(buf);
       }
@@ -227,12 +227,15 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       // —— bind group(按 buffer 身份缓存) ——
       let cacheKey = 0;
       for (let i = 0; i < ordered.length; i++) cacheKey = (cacheKey * 31 + bufId(ordered[i]!.gpuBuffer)) | 0;
-      let bg = bindGroupCache.get(cacheKey);
+      const ids = ordered.map((b) => bufId(b.gpuBuffer));
+      const cached = bindGroupCache.get(cacheKey);
+      const identityMatch = cached && cached.ids.length === ids.length && cached.ids.every((id, idx) => id === ids[idx]);
+      let bg = identityMatch ? cached!.bg : undefined;
       if (!bg) {
         const entries: GPUBindGroupEntry[] = [{ binding: 0, resource: { buffer: uniformBuffer } }];
         ordered.forEach((buffer, i) => entries.push({ binding: i + 1, resource: { buffer: buffer.gpuBuffer } }));
         bg = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
-        bindGroupCache.set(cacheKey, bg);
+        bindGroupCache.set(cacheKey, { bg, ids });
       }
 
       // —— 编码提交 ——

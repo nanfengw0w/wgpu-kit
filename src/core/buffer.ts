@@ -1,6 +1,6 @@
 import { TYPES, type ScalarKind } from './layout.ts';
 import { GpuContext } from './context.ts';
-import { UsageError } from './errors.ts';
+import { ERR, UsageError } from './errors.ts';
 
 const TYPED_CTORS: Record<'Float32Array' | 'Int32Array' | 'Uint32Array', typeof Float32Array | typeof Int32Array | typeof Uint32Array> = {
   Float32Array, Int32Array, Uint32Array,
@@ -22,6 +22,7 @@ export class Buffer<K extends ScalarKind = ScalarKind> {
   #ctx: GpuContext;
   #byteLength: number;
   #stride: number;
+  #reading: Promise<NumArray> | null = null;
   #staging: GPUBuffer | null = null;
 
   private constructor(ctx: GpuContext, kind: K, length: number, gpuBuffer: GPUBuffer) {
@@ -35,10 +36,10 @@ export class Buffer<K extends ScalarKind = ScalarKind> {
 
   static async create<K extends ScalarKind>(kind: K, length: number): Promise<Buffer<K>> {
     if (!Number.isInteger(length) || length <= 0) {
-      throw new UsageError(`Buffer 长度必须是正整数,收到: ${String(length)}`);
+      throw new UsageError(ERR.BUFFER_CREATE, `Buffer length must be a positive integer, got: ${String(length)}`);
     }
     const def = TYPES[kind];
-    if (!def) throw new UsageError(`未知类型 "${String(kind)}",可用: ${Object.keys(TYPES).join(', ')}`);
+    if (!def) throw new UsageError(ERR.BUFFER_CREATE, `Unknown Buffer kind "${String(kind)}". Available: ${Object.keys(TYPES).join(", ")}`);
     const ctx = await GpuContext.get();
     const gpuBuffer = ctx.device.createBuffer({
       size: length * def.stride,
@@ -53,11 +54,11 @@ export class Buffer<K extends ScalarKind = ScalarKind> {
     const def = TYPES[this.kind];
     const ctor = TYPED_CTORS[def.typed];
     if (!(data instanceof ctor)) {
-      throw new UsageError(`Buffer<${this.kind}>.write 需要 ${def.typed},收到 ${data.constructor?.name ?? typeof data}`);
+      throw new UsageError(ERR.BUFFER_WRITE, `Buffer<${this.kind}>.write expects ${def.typed}, got ${data.constructor?.name ?? typeof data}`);
     }
     const expected = this.length * def.comps;
     if (data.length !== expected) {
-      throw new UsageError(`Buffer<${this.kind}>[${this.length}].write 需要 ${expected} 个分量,收到 ${data.length}`);
+      throw new UsageError(ERR.BUFFER_WRITE, `Buffer<${this.kind}>[${this.length}].write expects ${expected} components, got ${data.length}`);
     }
     if (def.stride === def.size || def.comps === 1) {
       this.#ctx.device.queue.writeBuffer(this.gpuBuffer, 0, data);
@@ -75,6 +76,13 @@ export class Buffer<K extends ScalarKind = ScalarKind> {
 
   /** GPU → CPU:内部 staging buffer + mapAsync,mapAsync 的异步陷阱由库承担 */
   async read(): Promise<NumArray> {
+    if (this.#reading) return this.#reading;
+    this.#reading = this.#doRead();
+    try { return await this.#reading; }
+    finally { this.#reading = null; }
+  }
+
+  async #doRead(): Promise<NumArray> {
     const def = TYPES[this.kind];
     if (!this.#staging) {
       this.#staging = this.#ctx.device.createBuffer({

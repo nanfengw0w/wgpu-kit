@@ -1,5 +1,5 @@
 import { resolveMatrix, hashSeed, type ForceMatrix, type ForcePresetName } from './presets.ts';
-import { UsageError } from '../../core/errors.ts';
+import { ERR, UsageError } from '../../core/errors.ts';
 
 /** 粒子模拟的邻域算法路径(基准对比见 validation/05) */
 export type SimMode = 'n2' | 'tiled' | 'grid';
@@ -69,13 +69,13 @@ export function resolveConfig(config: ParticlesConfig = {}): ResolvedConfig {
   } = config;
 
   if (!Number.isInteger(count) || count <= 0 || count > 1_000_000) {
-    throw new UsageError(`count 必须是 1..1_000_000 的整数,收到: ${String(count)}`);
+    throw new UsageError(ERR.USAGE, `count must be an integer in 1..1_000_000, got: ${String(count)}`);
   }
   if (!MODES.includes(mode)) {
-    throw new UsageError(`mode 必须是 ${MODES.join(' | ')},收到: "${String(mode)}"`);
+    throw new UsageError(ERR.USAGE, `mode must be one of ${MODES.join(" | ")}, got: "${String(mode)}"`);
   }
   if (mode === 'n2' && count > 32_000) {
-    throw new UsageError(`mode='n2' 建议 count ≤ 20000(当前 ${count});大规模请用 mode='tiled' 或 'grid'`);
+    throw new UsageError(ERR.USAGE, `mode='n2' is recommended for count <= 20000 (got ${count}); use 'tiled' or 'grid' for larger counts`);
   }
   const seedStr = String(seed);
 

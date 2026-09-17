@@ -76,7 +76,7 @@ export function resolveMatrix(forces: ForcePresetName | 'random' | ForceMatrix, 
   if (typeof forces === 'string') {
     const preset = FORCE_PRESETS[forces];
     if (!preset) {
-      throw new Error(`未知力矩阵预设 "${forces}",可用: ${Object.keys(FORCE_PRESETS).join(', ')}, random`);
+      throw new Error(`Unknown force preset "${forces}". Available: ${Object.keys(FORCE_PRESETS).join(", ")}, random`);
     }
     return preset;
   }
