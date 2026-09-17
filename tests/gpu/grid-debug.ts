@@ -124,9 +124,9 @@ async function main() {
   {
     const sim = await particles({ ...CFG, mode: 'grid', maxNeighbors: 999999 });
     const dbg = sim.debugGrid?.();
-    const orderB = dbg ? dbg.order : undefined;
     const before = (await sim.buffers().pos.read()) as Float32Array;
     const spBefore = (await sim.buffers().species.read()) as Uint32Array;
+    const orderBuf = dbg ? (await dbg.order.read()) as Uint32Array : null;
     sim.tick();
     await ctx.sync();
     if (!dbg) { report('总力 probe', false, 'debugGrid 不可用'); return; }
@@ -162,7 +162,7 @@ async function main() {
         let ax = 0; let ay = 0;
         const s0 = startB[cc]!, e0 = fillB[cc]!;
         for (let k = s0; k < e0; k++) {
-          const j = orderB ? orderB[k]! : 0;
+          const j = orderBuf ? orderBuf[k]! : 0;
           if (j === 0) continue; // self
           const relX = before[j * 2]! - mpx;
           const relY = before[j * 2 + 1]! - mpy;
