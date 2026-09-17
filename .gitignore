@@ -36,3 +36,8 @@ docs/validation/
 # AI 工作台数据(本地记忆/索引,不进版本库)
 .workbuddy-ai/
 
+
+# Build & deployment artifacts
+*.tgz
+tests/gpu/*.bundle.js
+gh-pages/

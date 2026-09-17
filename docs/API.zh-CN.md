@@ -656,3 +656,76 @@ hotKernel(k, import.meta.hot, './sim.wgsl');
 
 完整数据:[benchmarks.md](benchmarks.md)。**大规模调参建议**:`count` 增大时
 适当减小 `rMax`(世界密度恒定,半径决定邻域数)。
+
+---
+
+# wgpu-kit/grid · 通用空间邻域
+
+从粒子包提取的通用计数排序空间哈希。任何需要"查邻居"的模拟(流体 SPH / 碰撞 / 聚类)都能用。实测 8.5× 于暴力解、近似 O(N)。
+
+## 构造
+
+##### createNeighborGrid ( config : NeighborGridConfig ) : Promise<NeighborGrid>
+
+| config 属性 | 类型 | 说明 | 默认 |
+| --- | --- | --- | --- |
+| count | number | 实体数量 | 必填 |
+| worldHalf | number | 世界半宽 | 必填 |
+| cellSize | number | 格子边长(通常 = 交互半径) | 必填 |
+| workgroupSize | number | workgroup 大小 | `64` |
+
+### 属性与方法
+
+| 成员 | 类型 | 说明 |
+| --- | --- | --- |
+| .gridSize | number (readonly) | 网格边长(格数) |
+| .cells | number (readonly) | 总格数 |
+| .cellStart | Buffer (readonly) | 各格起始槽位 |
+| .cellFill | Buffer (readonly) | 各格结束槽位 |
+| .order | Buffer (readonly) | 按格子序排列的实体下标 |
+| .update ( pos : Buffer ) : void | 按位置建格(counts → scan → scatter) |
+| .destroy ( ) : void | 释放 |
+
+### 代码示例
+
+```ts
+import { createNeighborGrid } from 'wgpu-kit/grid';
+
+const grid = await createNeighborGrid({ count: 100_000, worldHalf: 1.0, cellSize: 0.12 });
+// 每帧:先建格,再在你的力 kernel 里读 cellStart/cellFill/order
+grid.update(posBuffer);
+```
+
+---
+
+# wgpu-kit/observe · 可观测性
+
+GPU 计时 / 设备诊断 / 画布助手。
+
+## timeGpu
+
+##### timeGpu ( fn : (ctx) => void | Promise<void> ) : Promise<number>
+
+测量 fn 内 GPU 工作的真实毫秒(timestamp-query;Chrome/Edge 支持)。设备不支持时抛 `UsageError`。
+
+```ts
+import { timeGpu } from 'wgpu-kit/observe';
+const ms = await timeGpu(() => sim.tick());
+console.log(`GPU: ${ms.toFixed(2)} ms/frame`);
+```
+
+## watchDevice
+
+##### watchDevice ( opts : { onError?, onRebuild? } ) : void
+
+注册错误/丢失回调;设备丢失时**自动重建上下文**——长跑页面(展览/大屏)必需。
+
+## 画布助手
+
+##### preferredCanvasFormat ( ) : GPUTextureFormat
+
+返回当前浏览器推荐格式。
+
+##### resizeCanvas ( canvas, dprCap? = 2 ) : boolean
+
+按 DPR 上限调整画布尺寸;返回是否实际改变。
