@@ -131,7 +131,7 @@ listPacks(); // [{ name: 'particles', … }, { name: 'fields', … }, { name: 'o
 | 粒子端到端 | 200,000 @ ~120fps · 66,000 @ ~144fps | 显示 | RTX 4060 Laptop,playground 探针 |
 | 粒子计算(grid)同步 | 16k → 200k:3.6 → 36ms/帧 | 同步 | `npm run bench` → docs/BENCHMARK.md |
 | 邻域算法 | grid 近似 O(N),66k 时比暴力快 8.5× | 同步 A/B | 同会话 |
-| 库体积 | core gzip ~10kB(共享上下文构建) | — | gzip 预算由 build 强制 |
+| 库体积 | core gzip ~15kB,含类型化 schema 与 pack 平台(共享上下文构建) | — | gzip 预算由 build 强制 |
 
 所以:如果你用每帧 `device.queue.onSubmittedWorkDone()` 去测 grid@200k,
 看到的会是 ~30ms——那是同步延迟列,和 120fps 不矛盾。

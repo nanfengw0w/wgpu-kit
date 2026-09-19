@@ -48,8 +48,8 @@ for (const { file, path } of sizes.sort((a, b) => a.file.localeCompare(b.file)))
   console.log(`  ${file}: ${gz.toFixed(2)} kB gzip`);
   if ((file === 'index.js' || file.startsWith('core/') || file === 'layout.js' || file === 'errors.js') && file !== 'observe.js') totalCore += gz;
 }
-console.log(`  → core 合计: ${totalCore.toFixed(2)} kB gzip(预算 <15)`);
-if (totalCore > 15) { console.error('  ✗ core 超预算'); fail = true; }
+console.log(`  → core 合计: ${totalCore.toFixed(2)} kB gzip(预算 <16)`);
+if (totalCore > 16) { console.error('  ✗ core 超预算'); fail = true; }
 
 // 结构断言:全库必须共享唯一 context 模块(多设备问题的结构性防线)
 const contextFiles = readdirSync(join(DIST, 'core')).filter((f) => f === 'context.js').length;
