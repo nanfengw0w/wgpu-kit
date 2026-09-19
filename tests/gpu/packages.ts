@@ -122,7 +122,10 @@ async function main() {
 
 main()
   .then(() => report('summary-done', results.every((r) => r.pass), `${results.filter((r) => r.pass).length}/${results.length}`))
-  .catch((e) => report('fatal', false, String((e as Error).message ?? e).slice(0, 300)))
+  .catch((e) => {
+    const err = e as Error;
+    report('fatal', false, `${String(err.message ?? e).slice(0, 200)} || STACK: ${String(err.stack ?? '').replace(/\n/g, ' | ').slice(0, 500)}`);
+  })
   .finally(() => {
     (window as unknown as { __done: boolean }).__done = true;
     console.log('[RESULT]', JSON.stringify(results));

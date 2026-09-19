@@ -320,8 +320,10 @@ async function createShaderModuleChecked(device, code, label) {
   let messages;
   try {
     messages = (await module.getCompilationInfo()).messages;
-  } catch {
+    console.log(`[wgpu-kit/shader] ok: ${label} (${code.length}B)`);
+  } catch (e) {
     bypassCounter += 1;
+    console.log(`[wgpu-kit/shader] BYPASS#${bypassCounter}: ${label} <- ${String(e?.message ?? e).slice(0, 80)}`);
     const retryModule = device.createShaderModule({
       code: `${code}
 alias _wgpuKitBypass${bypassCounter} = u32;`,

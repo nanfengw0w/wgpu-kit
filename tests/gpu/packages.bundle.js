@@ -354,8 +354,10 @@ async function createShaderModuleChecked(device, code, label) {
   let messages;
   try {
     messages = (await module.getCompilationInfo()).messages;
-  } catch {
+    console.log(`[wgpu-kit/shader] ok: ${label} (${code.length}B)`);
+  } catch (e) {
     bypassCounter += 1;
+    console.log(`[wgpu-kit/shader] BYPASS#${bypassCounter}: ${label} <- ${String(e?.message ?? e).slice(0, 80)}`);
     const retryModule = device.createShaderModule({
       code: `${code}
 alias _wgpuKitBypass${bypassCounter} = u32;`,
@@ -1179,7 +1181,10 @@ async function main() {
     report("image-edge", border > 40 && center < 40, `\u8FB9\u754C ${border}(\u671F >40) \u5E73\u5766\u533A ${center}(\u671F <40)`);
   }
 }
-main().then(() => report("summary-done", results.every((r) => r.pass), `${results.filter((r) => r.pass).length}/${results.length}`)).catch((e) => report("fatal", false, String(e.message ?? e).slice(0, 300))).finally(() => {
+main().then(() => report("summary-done", results.every((r) => r.pass), `${results.filter((r) => r.pass).length}/${results.length}`)).catch((e) => {
+  const err = e;
+  report("fatal", false, `${String(err.message ?? e).slice(0, 200)} || STACK: ${String(err.stack ?? "").replace(/\n/g, " | ").slice(0, 500)}`);
+}).finally(() => {
   window.__done = true;
   console.log("[RESULT]", JSON.stringify(results));
 });
