@@ -142,6 +142,17 @@ listPacks(); // [{ name: 'particles', … }, { name: 'fields', … }, { name: 'o
 2. **错误说人话**——WGSL 编译失败映射回你的代码行号;
 3. **基准即文档**——所有数字可复现;gzip 体积预算由 `npm run build` 强制核对。
 
+## 验证
+
+41+ 自动化探针在真实 GPU 上经 headless Chromium harness 运行(随库附带:
+`tests/` + `scripts/verify.mjs`)——包括**物理等价性回归**(n2 / tiled / grid
+三种邻域算法结构发散即构建失败),以及扫描不变量与冻结带检测(确定性拦截
+半格失效类 bug)。
+
+**CI 中**:正确性子集(smoke / packages / grid 不变量)在每次 push 时于
+Chrome 的 SwiftShader WebGPU 上运行——无需 GPU——物理正确性不会在机器之间
+悄悄回退。fps 类探针在 CPU 适配器上没有意义,按设计只在真机上跑。
+
 ## 支持矩阵
 
 | 浏览器 | 状态 |

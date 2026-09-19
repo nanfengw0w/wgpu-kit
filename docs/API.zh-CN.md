@@ -11,6 +11,7 @@
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | 粒子生命模拟 |
 | [wgpu-kit/life](#wgpu-kitlife--人工生命) | 图灵斑图 · 粘菌 · Boids · 软体触手 |
 | [wgpu-kit/fields](#wgpu-kitfields--flow) | 向量场平迹 |
+| [wgpu-kit/grid](#wgpu-kitgrid--通用空间邻域) | 通用空间邻域(计数排序哈希) |
 | [wgpu-kit/image](#wgpu-kitimage--applyimage) | GPU 滤镜管线 |
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
 | [wgpu-kit/three](#wgpu-kitthree--threepoints) | three.js 互通 |

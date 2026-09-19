@@ -11,6 +11,7 @@
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | particle-life simulation with GPU rendering |
 | [wgpu-kit/life](#wgpu-kitlife--artificial-life) | Turing patterns · Physarum · Boids · soft tentacles |
 | [wgpu-kit/fields](#wgpu-kitfields--flow) | vector-field advection trails |
+| [wgpu-kit/grid](#wgpu-kitgrid--generic-spatial-neighborhood) | generic spatial neighborhood (counting-sort hash) |
 | [wgpu-kit/image](#wgpu-kitimage--applyimage) | GPU filter pipeline |
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
 | [wgpu-kit/three](#wgpu-kitthree--threepoints) | three.js interop |
@@ -776,6 +777,47 @@ Full data and repro commands: see the repository benchmarks page. **Scaling
 tip**: as `count` grows, keep the world density constant (handled
 automatically) and consider lowering `rMax` — the radius determines the
 neighbor count, which dominates the cost.
+
+---
+
+# wgpu-kit/grid · generic spatial neighborhood
+
+Counting-sort spatial hash extracted from the particles pack. Any simulation
+that needs "find my neighbors" (SPH fluids / collision / clustering) can use
+it. Measured 8.5× over brute force, ~O(N).
+
+## Constructor
+
+##### createNeighborGrid ( config : NeighborGridConfig ) : Promise\<NeighborGrid\>
+
+| config property | type | description | default |
+| --- | --- | --- | --- |
+| count | number | number of entities | required |
+| worldHalf | number | world half-width | required |
+| cellSize | number | cell edge length (usually = interaction radius) | required |
+| workgroupSize | number | workgroup size | `64` |
+
+### Properties & methods
+
+| member | type | description |
+| --- | --- | --- |
+| .gridSize | number (readonly) | grid edge length (cells per side) |
+| .cells | number (readonly) | total cell count |
+| .cellStart | Buffer (readonly) | first ordered slot per cell |
+| .cellFill | Buffer (readonly) | end slot per cell (fill cursor) |
+| .order | Buffer (readonly) | entity indices in cell order |
+| .update ( pos : Buffer ) : void | build the grid from positions (counts → scan → scatter) |
+| .destroy ( ) : void | release |
+
+### Code Example
+
+```ts
+import { createNeighborGrid } from 'wgpu-kit/grid';
+
+const grid = await createNeighborGrid({ count: 100_000, worldHalf: 1.0, cellSize: 0.12 });
+// each frame: build the grid, then read cellStart/cellFill/order in your force kernel
+grid.update(posBuffer);
+```
 
 ---
 
