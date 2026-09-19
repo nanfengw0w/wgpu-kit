@@ -34,10 +34,10 @@ const latest = JSON.parse(readFileSync(join(resultsDir, files[0]), 'utf8'));
 const rows = latest.results
   .filter((r) => r.name.startsWith('bench'))
   .map((r) => {
-    const m = r.detail.match(/^([\d.]+) ms\/frame sync · ([\d.]+) fps rAF/);
-    const [tag, ms, fpsRaf] = [r.name.replace('bench ', ''), m?.[1] ?? '?', m?.[2] ?? '?'];
+    const m = r.detail.match(/^([\d.]+) ms\/frame sync · ([\d.]+) fps 管线/);
+    const [tag, ms, fpsPipe] = [r.name.replace('bench ', ''), m?.[1] ?? '?', m?.[2] ?? '?'];
     const syncFps = ms !== '?' ? (1000 / parseFloat(ms)).toFixed(1) : '?';
-    return `| ${tag} | ${ms} | ${syncFps} | ${fpsRaf} |`;
+    return `| ${tag} | ${ms} | ${syncFps} | ${fpsPipe} |`;
   });
 
 const md = `# 邻域算法基准(自动生成)
@@ -48,10 +48,10 @@ const md = `# 邻域算法基准(自动生成)
 **两种口径,不要混着读:**
 - **同步延迟**(ms/帧,及 1000/ms 的折算 fps):每帧 \`tick()\` 后等 GPU 跑完再计时,
   杀死 CPU/GPU 流水线重叠——衡量单帧往返耗时的上界,适合做算法 A/B 对比。
-- **rAF 吞吐**(fps):requestAnimationFrame 节流、每帧提交不等完成,与 playground
-  实际帧率同口径——这才是用户看到的 fps。两项数字都真实,量的是不同的东西。
+- **管线吞吐**(fps,3 帧在途泵送):每帧提交不等完成、在途满 3 帧排空一次,
+  量 CPU/GPU 重叠下的饱和吞吐——playground 实际帧率受显示节流,低于此值属正常。
 
-| 路径 | 同步 ms/帧 | 同步折算 fps | rAF 端到端 fps |
+| 路径 | 同步 ms/帧 | 同步折算 fps | 管线 fps(3帧在途) |
 | --- | --- | --- | --- |
 ${rows.join('\n')}
 

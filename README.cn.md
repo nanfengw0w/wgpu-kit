@@ -117,17 +117,19 @@ listPacks(); // [{ name: 'particles', … }, { name: 'fields', … }, { name: 'o
 
 ## 数字(全部可复现)
 
-两种口径,都是真实数字,量的是不同的东西,**别混着读**(双口径全表见
+三种都是真实数字,量的是不同的东西,**别混着读**(双口径全表见
 [docs/BENCHMARK.md](docs/BENCHMARK.md),由 `npm run bench` 生成):
 
-- **rAF 吞吐**:每帧 `tick()` 由 rAF 驱动、CPU/GPU 流水线重叠——就是你在
-  playground 里实际看到的 fps(探针:playground URL 加 `?verify=10` 自报);
+- **显示帧率**:playground 里实际看到的 fps,由浏览器节流(探针:URL 加
+  `?verify=10` 自报);
+- **管线饱和吞吐**:3 帧在途泵送——每帧提交不等完成、在途满 3 帧排空一次,
+  这是 GPU 的持续吞吐上限(`npm run bench` 的"管线 fps"列);
 - **同步延迟**:每帧 `tick()` 后等 GPU 完成——单帧往返上界,用于算法 A/B。
 
 | 指标 | 数值 | 口径 | 环境 |
 | --- | --- | --- | --- |
-| 粒子端到端 | 200,000 @ ~120fps · 66,000 @ ~144fps | rAF | RTX 4060 Laptop,playground 探针 |
-| 粒子计算(grid)同步 | 16k → 200k:3 → 30ms/帧 | 同步 | `npm run bench` → docs/BENCHMARK.md |
+| 粒子端到端 | 200,000 @ ~120fps · 66,000 @ ~144fps | 显示 | RTX 4060 Laptop,playground 探针 |
+| 粒子计算(grid)同步 | 16k → 200k:3.6 → 36ms/帧 | 同步 | `npm run bench` → docs/BENCHMARK.md |
 | 邻域算法 | grid 近似 O(N),66k 时比暴力快 8.5× | 同步 A/B | 同会话 |
 | 库体积 | core gzip ~10kB(共享上下文构建) | — | gzip 预算由 build 强制 |
 
