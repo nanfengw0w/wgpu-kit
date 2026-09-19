@@ -7,7 +7,7 @@
 
 | 入口 | 内容 |
 | --- | --- |
-| [wgpu-kit](#wgpu-kit--kernel-核心) | GpuContext · Buffer · elementKernel · PingPong · rawKernel · 错误类 |
+| [wgpu-kit](#wgpu-kit--kernel-核心) | GpuContext · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · 错误类 |
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | 粒子生命模拟 |
 | [wgpu-kit/life](#wgpu-kitlife--人工生命) | 图灵斑图 · 粘菌 · Boids · 软体触手 |
 | [wgpu-kit/fields](#wgpu-kitfields--flow) | 向量场平迹 |
@@ -277,6 +277,107 @@ const double = rawKernel(`
   }
 `);
 await double.run([{ binding: 0, resource: { buffer: myBuffer.gpuBuffer } }], 16);
+```
+
+---
+
+# wgpu-kit · defineSchema
+
+类型化 schema 层:字段表声明一次,同时得到编译期 TS 行类型、生成的 WGSL
+struct 代码和逐字段类型化 GPU 缓冲——消灭 JS/WGSL schema 漂移与无类型的
+buffer 读写。诚实边界:WGSL 函数体内部的错误仍由 WGSL 编译器报错(带你的
+行号映射);完整 WGSL 类型检查不在承诺范围。
+
+## defineSchema ( fields ) : Schema
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| fields | `Record<string, ScalarKind>`(const 对象) | 字段名与类型,声明顺序即成员顺序 |
+
+`ScalarKind`:`'f32' | 'i32' | 'u32' | 'vec2f' | 'vec2i' | 'vec2u' | 'vec3f' | 'vec4f'`。
+
+### 成员
+
+##### .fields : F
+
+原始声明——直接喂 `elementKernel` 的 `state`(名称/顺序同源)。
+
+##### .wgslStruct ( name : string, addressSpace? : 'storage' | 'uniform' ) : string
+
+生成 `struct <name> { … }`。`'storage'` 语义下 `vec3f` 成员补 `@size(16)`
+(WGSL 数组元素步长规则),GPU/CPU 布局永不漂移。
+
+##### .buffers ( count ) : Promise\<SchemaBuffers\>
+
+每字段一个类型化缓冲(与 elementKernel 的绑定模型一致)。
+
+### SchemaBuffers
+
+| 成员 | 说明 |
+| --- | --- |
+| `.<字段名>` | `TypedBuffer<K>` — `write(rows)` / `read(): Promise<rows>` 收发行对象(`vec2f` 即 `{x, y}`);`.raw` 是普通 `Buffer`(逃生舱) |
+| `.raws()` | `{ [字段]: Buffer }` — 直接传给 `elementKernel.run()` |
+| `.destroy()` | 销毁全部字段缓冲 |
+
+### 代码示例
+
+```ts
+import { defineSchema, elementKernel, type SchemaInfer } from 'wgpu-kit';
+
+const Boid = defineSchema({ pos: 'vec2f', vel: 'vec2f', species: 'u32' });
+type BoidRow = SchemaInfer<typeof Boid.fields>; // { pos: {x,y}, vel: {x,y}, species: number }
+
+const bufs = await Boid.buffers(count);
+bufs.pos.write([{ x: 1, y: 2 }]);               // 字段/分量拼错 = 编译期报错
+const k = elementKernel({ state: Boid.fields, code: 'fn userFn(idx: u32) { … }' });
+await k.run(bufs.raws());
+const rows = await bufs.pos.read();             // 带类型的行对象
+```
+
+---
+
+# wgpu-kit · definePack / registerPack
+
+Pack 平台契约:第三方模拟通过与内置包完全相同的契约注册——统一生命周期、
+统计、自验证 `probe()` 和运行时注册表。
+
+## PackSim
+
+| 成员 | 必需 | 说明 |
+| --- | --- | --- |
+| `attach?(canvas)` | 否 | 需要 canvas 的包在此建渲染器 |
+| `tick()` | 是 | 推进一帧(计算 + 可选渲染) |
+| `stats?()` | 否 | 轻量运行统计(`{ fps }` 等) |
+| `probe?()` | 否 | 返回物理不变量——verify harness 收集并展示 |
+| `destroy()` | 是 | 释放全部 GPU 资源 |
+
+## definePack ( pack ) : WgpuKitPack
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| pack.name | string | 小写标识符;注册表命名空间 |
+| pack.description? | string | `listPacks()` 展示用 |
+| pack.create(config?) | function | 返回 `Promise<PackSim>` |
+
+## registerPack ( pack ) / getPack ( name ) / listPacks ()
+
+注册表操作。同名重复注册抛 `UsageError`——内置包不可被覆盖。
+
+### 代码示例
+
+```ts
+import { definePack, registerPack, listPacks } from 'wgpu-kit';
+
+const orbit = definePack({
+  name: 'orbit',
+  create: async (config) => ({
+    tick() { /* … */ },
+    async probe() { return { energyDrift: 0.003 }; },
+    destroy() { /* … */ },
+  }),
+});
+registerPack(orbit);
+listPacks(); // 包含 'particles'、'fields'、'orbit'
 ```
 
 ---

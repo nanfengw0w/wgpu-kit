@@ -45,6 +45,8 @@ interface NormalizedSpec {
   inputs: Array<readonly [string, ScalarKind]>;
   uniforms: Array<readonly [string, ScalarKind]>;
   code: string;
+  /** 入口点静态使用的 binding 号('auto' 布局语义,见生成处的注释) */
+  usedBindings: Set<number>;
 }
 
 const RESERVED = new Set(['count']);
@@ -90,6 +92,18 @@ export function generateElementKernel(spec: ElementKernelSpec): {
   const uniformEntries: Array<readonly [string, ScalarKind]> = [...uniforms, ['count', 'u32']];
   const uniformLayout = planUniform(uniformEntries);
 
+  // —— 静态使用分析:layout:'auto' 的绑定组布局只含入口点**实际引用**的绑定。
+  // 声明了但 userFn 没用到的字段若塞进 bind group → 校验错误且被异步吞掉
+  // (表现为核不生效)。头文件由我们生成,字段是否使用等价于其名字是否作为
+  // 词法 token 出现在用户代码里。params(binding 0)因 params.count 恒被使用。
+  const wordInCode = (n: string) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(spec.code);
+  const usedBindings = new Set<number>([0]);
+  {
+    let b = 1;
+    for (const [n] of state) { if (wordInCode(n)) usedBindings.add(b); b++; }
+    for (const [n] of inputs) { if (wordInCode(n)) usedBindings.add(b); b++; }
+  }
+
   // —— 生成 WGSL:头部(声明) + main + 用户代码 ——
   const header: string[] = [];
   header.push('// 由 wgpu-kit elementKernel 生成');
@@ -113,7 +127,7 @@ export function generateElementKernel(spec: ElementKernelSpec): {
   const source = [...header, spec.code].join('\n');
 
   return {
-    normalized: { name, workgroupSize, state, inputs, uniforms, code: spec.code },
+    normalized: { name, workgroupSize, state, inputs, uniforms, code: spec.code, usedBindings },
     source,
     uniformLayout,
     userCodeLineOffset,
@@ -176,8 +190,10 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       // 先编译后切换:新代码编译失败则保持旧版不动
       const savedSource = source;
       const savedOffset = userCodeLineOffset;
+      const savedNormalized = normalized;
       source = regen.source;
       userCodeLineOffset = regen.userCodeLineOffset;
+      normalized = regen.normalized; // usedBindings 随新代码重算
       try {
         const p = await compilePipeline();
         pipelinePromise = Promise.resolve(p);
@@ -185,6 +201,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       } catch (e) {
         source = savedSource;
         userCodeLineOffset = savedOffset;
+        normalized = savedNormalized;
         throw e;
       }
     },
@@ -232,8 +249,12 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       const identityMatch = cached && cached.ids.length === ids.length && cached.ids.every((id, idx) => id === ids[idx]);
       let bg = identityMatch ? cached!.bg : undefined;
       if (!bg) {
-        const entries: GPUBindGroupEntry[] = [{ binding: 0, resource: { buffer: uniformBuffer } }];
-        ordered.forEach((buffer, i) => entries.push({ binding: i + 1, resource: { buffer: buffer.gpuBuffer } }));
+        // 只绑定入口点静态使用的绑定(layout:'auto' 语义,见生成处的注释)
+        const entries: GPUBindGroupEntry[] = [];
+        if (normalized.usedBindings.has(0)) entries.push({ binding: 0, resource: { buffer: uniformBuffer } });
+        ordered.forEach((buffer, i) => {
+          if (normalized.usedBindings.has(i + 1)) entries.push({ binding: i + 1, resource: { buffer: buffer.gpuBuffer } });
+        });
         bg = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
         bindGroupCache.set(cacheKey, { bg, ids });
       }

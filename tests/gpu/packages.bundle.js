@@ -130,7 +130,7 @@ var init_context = __esm({
         if (typeof navigator === "undefined" || !("gpu" in navigator) || !navigator.gpu) {
           throw new WebGPUUnavailableError("navigator.gpu is not available");
         }
-        const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+        const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" }) ?? await navigator.gpu.requestAdapter({ forceFallbackAdapter: true });
         if (!adapter) throw new WebGPUUnavailableError("requestAdapter() \u8FD4\u56DE null");
         const info = adapter.info;
         const label = info ? [info.vendor, info.architecture, info.description].filter(Boolean).join(" / ") || "unknown" : "unknown";
@@ -338,6 +338,18 @@ var PingPong = class _PingPong {
 
 // src/packs/fields/index.ts
 init_errors();
+
+// src/core/pack.ts
+init_errors();
+function definePack(pack) {
+  if (!pack || typeof pack.name !== "string" || !/^[a-z][a-z0-9-]*$/.test(pack.name)) {
+    throw new UsageError(ERR.USAGE, `definePack: name must be a lowercase identifier, got: ${String(pack?.name)}`);
+  }
+  if (typeof pack.create !== "function") {
+    throw new UsageError(ERR.USAGE, `definePack("${pack.name}"): create(config) is required`);
+  }
+  return pack;
+}
 
 // src/packs/life/map.ts
 init_context();
@@ -622,6 +634,22 @@ async function flow(config = {}) {
     async sampleTrail() {
       return await trail.current.t.read();
     },
+    async probe() {
+      const t = await trail.current.t.read();
+      let finite = true;
+      let maxv = 0;
+      let sum = 0;
+      for (let i = 0; i < t.length; i++) {
+        const v = t[i];
+        if (!Number.isFinite(v)) {
+          finite = false;
+          break;
+        }
+        if (v > maxv) maxv = v;
+        sum += v;
+      }
+      return { finite, trailMax: maxv, trailMean: sum / Math.max(t.length, 1), frames: frame };
+    },
     destroy() {
       posBuf.destroy();
       trail.destroy();
@@ -630,6 +658,11 @@ async function flow(config = {}) {
     }
   };
 }
+var fieldsPack = definePack({
+  name: "fields",
+  description: "Vector-field advection trails (vortex / curl / twin)",
+  create: (config) => flow(config ?? {})
+});
 function advectWgsl(fieldFn, mapSize) {
   return (
     /* wgsl */

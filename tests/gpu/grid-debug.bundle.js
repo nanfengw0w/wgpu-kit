@@ -106,7 +106,7 @@ var GpuContext = class _GpuContext {
     if (typeof navigator === "undefined" || !("gpu" in navigator) || !navigator.gpu) {
       throw new WebGPUUnavailableError("navigator.gpu is not available");
     }
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" }) ?? await navigator.gpu.requestAdapter({ forceFallbackAdapter: true });
     if (!adapter) throw new WebGPUUnavailableError("requestAdapter() \u8FD4\u56DE null");
     const info = adapter.info;
     const label = info ? [info.vendor, info.architecture, info.description].filter(Boolean).join(" / ") || "unknown" : "unknown";
@@ -1360,7 +1360,8 @@ var report = (name, pass, detail = "") => {
   document.getElementById("out").textContent = results.map((r) => `${mark(r)} ${r.name}: ${r.detail}`).join("\n");
 };
 var CFG = { count: 28e3, seed: "18dz5h", forces: "random", rMax: 0.12 };
-var FRAMES = 300;
+var LITE = new URLSearchParams(location.search).has("lite");
+var FRAMES = LITE ? 100 : 300;
 async function scanInvariants(label, n, rMax2, frames) {
   const sim = await particles({ count: n, seed: CFG.seed, forces: "random", rMax: rMax2, mode: "grid" });
   const dbg = sim.debugGrid?.();
@@ -1402,7 +1403,8 @@ async function frozenBands(label, n, rMax2) {
   const sim = await particles({ count: n, seed: CFG.seed, forces: "random", rMax: rMax2, mode: "grid" });
   const ctx = await GpuContext.get();
   const p0 = await sim.buffers().pos.read();
-  for (let f = 0; f < 120; f++) sim.tick();
+  const frames = LITE ? 40 : 120;
+  for (let f = 0; f < frames; f++) sim.tick();
   await ctx.sync();
   const p1 = await sim.buffers().pos.read();
   const count = p1.length / 2;
@@ -1421,8 +1423,9 @@ async function frozenBands(label, n, rMax2) {
     means.push(cnt > 0 ? sum / cnt : -1);
   }
   const min = Math.min(...means);
-  const ok = min > 0.02;
-  report(`${label} \u51BB\u7ED3\u5E26\u68C0\u6D4B`, ok, `\u5404\u5E26\u5E73\u5747\u4F4D\u79FB [${means.map((m) => m.toFixed(3)).join(", ")}](\u6700\u4F4E\u5E26\u9608 0.02)`);
+  const thresh = frames * 17e-5;
+  const ok = min > thresh;
+  report(`${label} \u51BB\u7ED3\u5E26\u68C0\u6D4B`, ok, `\u5404\u5E26\u5E73\u5747\u4F4D\u79FB [${means.map((m) => m.toFixed(3)).join(", ")}](\u6700\u4F4E\u5E26\u9608 ${thresh.toFixed(3)})`);
   sim.destroy();
 }
 function structureStats(pos, samples, rHalf) {
@@ -1600,8 +1603,9 @@ async function main() {
   report("\u9010\u5E27\u5BF9\u6BD4", true, await compareModes(1));
   report("\u9010\u5E27\u5BF9\u6BD4", true, await compareModes(30));
   await scanInvariants("28k", CFG.count, CFG.rMax, 1);
-  await scanInvariants("28k", CFG.count, CFG.rMax, 120);
-  await scanInvariants("42k", 42e3, 0.16, 120);
+  const LONG = LITE ? 40 : 120;
+  await scanInvariants("28k", CFG.count, CFG.rMax, LONG);
+  await scanInvariants("42k", 42e3, 0.16, LONG);
   await frozenBands("28k", CFG.count, CFG.rMax);
   await frozenBands("42k", 42e3, 0.16);
   const t0 = performance.now();

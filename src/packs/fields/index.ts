@@ -2,6 +2,7 @@ import { GpuContext } from '../../core/context.ts';
 import { Buffer } from '../../core/buffer.ts';
 import { PingPong } from '../../core/pingpong.ts';
 import { CompileError } from '../../core/errors.ts';
+import { definePack, type PackSim } from '../../core/pack.ts';
 import { MapRenderer, type Colormap } from '../life/map.ts';
 import { mulberry32 } from '../particles/presets.ts';
 
@@ -23,10 +24,12 @@ export interface FlowConfig {
   colormap?: Colormap;
 }
 
-export interface FlowSim {
+export interface FlowSim extends PackSim {
   attach(canvas: HTMLCanvasElement): Promise<void>;
   tick(): void;
   stats(): { fps: number };
+  /** 自检:信息素图应有结构(有限值、非零峰值)——verify harness 直接收集 */
+  probe(): Promise<{ finite: boolean; trailMax: number; trailMean: number; frames: number }>;
   sampleTrail(): Promise<Float32Array>;
   destroy(): void;
 }
@@ -185,12 +188,32 @@ export async function flow(config: FlowConfig = {}): Promise<FlowSim> {
 
     stats() { return { fps: lastFps }; },
     async sampleTrail() { return (await trail.current.t.read()) as Float32Array; },
+    async probe() {
+      const t = (await trail.current.t.read()) as Float32Array;
+      let finite = true;
+      let maxv = 0;
+      let sum = 0;
+      for (let i = 0; i < t.length; i++) {
+        const v = t[i]!;
+        if (!Number.isFinite(v)) { finite = false; break; }
+        if (v > maxv) maxv = v;
+        sum += v;
+      }
+      return { finite, trailMax: maxv, trailMean: sum / Math.max(t.length, 1), frames: frame };
+    },
 
     destroy() {
       posBuf.destroy(); trail.destroy(); uniform.destroy(); diffuseUniform.destroy();
     },
   };
 }
+
+/** fields 包的平台注册形态:第三方包与它长得一模一样(见 docs "Writing a pack") */
+export const fieldsPack = definePack<FlowConfig, FlowSim>({
+  name: 'fields',
+  description: 'Vector-field advection trails (vortex / curl / twin)',
+  create: (config) => flow(config ?? {}),
+});
 
 function advectWgsl(fieldFn: string, mapSize: number): string {
   return /* wgsl */ `
