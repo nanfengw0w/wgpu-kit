@@ -7,10 +7,18 @@ import { WebGPUUnavailableError } from './errors.ts';
 export class GpuContext {
   readonly device: GPUDevice;
   readonly adapterInfo: string;
+  /**
+   * 必须持有 adapter 强引用:adapter 是 JS 侧到 Dawn Instance 的锚。若被 GC
+   * 回收,设备的异步操作(mapAsync / getCompilationInfo)会随机 abort
+   * "A valid external Instance reference no longer exists" —— 无头 SwiftShader
+   * 上必现的重负载页面死亡根因(CI gpu-probes 第 2~7 跑的事故链)。
+   */
+  readonly #adapter: GPUAdapter;
 
-  private constructor(device: GPUDevice, adapterInfo: string) {
+  private constructor(device: GPUDevice, adapterInfo: string, adapter: GPUAdapter) {
     this.device = device;
     this.adapterInfo = adapterInfo;
+    this.#adapter = adapter;
   }
 
   static #singleton: Promise<GpuContext> | null = null;
@@ -58,7 +66,7 @@ export class GpuContext {
       if (typeof supported === 'number') requiredLimits[key] = supported;
     }
     const device = await adapter.requestDevice({ label: 'wgpu-kit', requiredLimits });
-    return new GpuContext(device, label);
+    return new GpuContext(device, label, adapter);
   }
 
   /** device lost 时 reject;调用方可 await 做清理/提示 */
