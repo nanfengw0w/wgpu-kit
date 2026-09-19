@@ -2,6 +2,7 @@ import { GpuContext } from '../../core/context.ts';
 import { Buffer } from '../../core/buffer.ts';
 import { PingPong } from '../../core/pingpong.ts';
 import { CompileError } from '../../core/errors.ts';
+import { createShaderModuleChecked } from '../../core/shader.ts';
 import { MapRenderer } from './map.ts';
 import { mulberry32 } from '../particles/presets.ts';
 
@@ -96,9 +97,8 @@ export async function physarum(config: PhysarumConfig = {}): Promise<PhysarumSim
   device.queue.writeBuffer(diffuseUniform, 8, new Float32Array([1 - decay, 0]));
 
   const compile = async (code: string, label: string) => {
-    const m = device.createShaderModule({ code, label });
-    const info = await m.getCompilationInfo();
-    const errors = info.messages.filter((x) => x.type === 'error');
+    const { module: m, messages } = await createShaderModuleChecked(device, code, label);
+    const errors = messages.filter((x) => x.type === 'error');
     if (errors.length > 0) throw new CompileError(label, errors.map((x) => ({ line: x.lineNum, msg: x.message })), 0);
     return m;
   };

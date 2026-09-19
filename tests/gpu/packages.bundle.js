@@ -339,6 +339,21 @@ var PingPong = class _PingPong {
 // src/packs/fields/index.ts
 init_errors();
 
+// src/core/shader.ts
+var COMPILATION_RETRY_DELAY_MS = 150;
+async function createShaderModuleChecked(device, code, label) {
+  for (let attempt = 0; ; attempt++) {
+    const module = device.createShaderModule({ code, label });
+    try {
+      const info = await module.getCompilationInfo();
+      return { module, messages: info.messages };
+    } catch (e) {
+      if (attempt >= 1) throw e;
+      await new Promise((r) => setTimeout(r, COMPILATION_RETRY_DELAY_MS));
+    }
+  }
+}
+
 // src/core/pack.ts
 init_errors();
 function definePack(pack) {
@@ -559,9 +574,8 @@ async function flow(config = {}) {
   device.queue.writeBuffer(diffuseUniform, 0, new Uint32Array([mapSize, mapSize]));
   device.queue.writeBuffer(diffuseUniform, 8, new Float32Array([1 - decay, 0]));
   const compile = async (code, label) => {
-    const m = device.createShaderModule({ code, label });
-    const info = await m.getCompilationInfo();
-    const errors = info.messages.filter((x) => x.type === "error");
+    const { module: m, messages } = await createShaderModuleChecked(device, code, label);
+    const errors = messages.filter((x) => x.type === "error");
     if (errors.length > 0) throw new CompileError(label, errors.map((x) => ({ line: x.lineNum, msg: x.message })), 0);
     return m;
   };
@@ -770,9 +784,8 @@ async function applyImage(source, target, ops) {
     });
     return t;
   };
-  const module = device.createShaderModule({ code: shader(), label: "image-filters" });
-  const info = await module.getCompilationInfo();
-  const errors = info.messages.filter((m) => m.type === "error");
+  const { module, messages } = await createShaderModuleChecked(device, shader(), "image-filters");
+  const errors = messages.filter((m) => m.type === "error");
   if (errors.length > 0) throw new CompileError("image-filters", errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
   const pipeline = device.createRenderPipeline({
     layout: "auto",

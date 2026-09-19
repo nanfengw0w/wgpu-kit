@@ -2,6 +2,7 @@ import { GpuContext } from '../../core/context.ts';
 import { Buffer } from '../../core/buffer.ts';
 import { PingPong } from '../../core/pingpong.ts';
 import { CompileError } from '../../core/errors.ts';
+import { createShaderModuleChecked } from '../../core/shader.ts';
 import { MapRenderer } from './map.ts';
 import { mulberry32 } from '../particles/presets.ts';
 
@@ -98,9 +99,8 @@ export async function turing(config: TuringConfig = {}): Promise<TuringSim> {
   };
   writeUniform();
 
-  const module = device.createShaderModule({ code: updateWgsl(), label: 'turing-update' });
-  const info = await module.getCompilationInfo();
-  const errors = info.messages.filter((m) => m.type === 'error');
+  const { module, messages } = await createShaderModuleChecked(device, updateWgsl(), 'turing-update');
+  const errors = messages.filter((m) => m.type === 'error');
   if (errors.length > 0) throw new CompileError('turing-update', errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
   const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
 

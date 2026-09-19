@@ -2,6 +2,7 @@ import { GpuContext } from '../../core/context.ts';
 import { Buffer } from '../../core/buffer.ts';
 import { PingPong } from '../../core/pingpong.ts';
 import { CompileError } from '../../core/errors.ts';
+import { createShaderModuleChecked } from '../../core/shader.ts';
 import { createNeighborGrid } from '../grid/index.ts';
 import { mulberry32 } from '../particles/presets.ts';
 
@@ -78,9 +79,8 @@ export async function boids(config: BoidsConfig = {}): Promise<BoidsSim> {
   writeUniform();
 
 
-  const module = device.createShaderModule({ code: boidsWgsl(size), label: 'boids' });
-  const info = await module.getCompilationInfo();
-  const errors = info.messages.filter((m) => m.type === 'error');
+  const { module, messages } = await createShaderModuleChecked(device, boidsWgsl(size), 'boids');
+  const errors = messages.filter((m) => m.type === 'error');
   if (errors.length > 0) throw new CompileError('boids', errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
 
   const neighborGrid = await createNeighborGrid({ count: N, worldHalf: 1.0, cellSize: perception });

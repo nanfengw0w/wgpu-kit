@@ -1,6 +1,7 @@
 import { GpuContext } from '../../core/context.ts';
 import { Buffer } from '../../core/buffer.ts';
 import { CompileError } from '../../core/errors.ts';
+import { createShaderModuleChecked } from '../../core/shader.ts';
 
 /**
  * NeighborGrid —— 通用空间邻域加速(计数排序 spatial hash)。
@@ -78,9 +79,8 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
   const order = await Buffer.create('u32', count);
   cellCount.write(new Uint32Array(cells));
 
-  const module = device.createShaderModule({ code: gridWgsl(), label: 'ngrid' });
-  const info = await module.getCompilationInfo();
-  const errors = info.messages.filter((m) => m.type === 'error');
+  const { module, messages } = await createShaderModuleChecked(device, gridWgsl(), 'ngrid');
+  const errors = messages.filter((m) => m.type === 'error');
   if (errors.length > 0) throw new CompileError('ngrid', errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
 
   const pCounts = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_counts' } });
