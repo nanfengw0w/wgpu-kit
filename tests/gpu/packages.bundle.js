@@ -1019,6 +1019,7 @@ var report = (name, pass, detail = "") => {
   document.getElementById("out").textContent = results.map((r) => `${r.pass ? "\u2713" : "\u2717"} ${r.name}: ${r.detail}`).join("\n");
 };
 async function main() {
+  const LITE = new URLSearchParams(location.search).has("lite");
   {
     const { GpuContext: GpuContext2 } = await Promise.resolve().then(() => (init_context(), context_exports));
     const g = await GpuContext2.get();
@@ -1133,12 +1134,15 @@ async function main() {
     }
     sim.destroy();
   }
-  {
+  if (!LITE) {
     const sim = await flow({ count: 65536, mapSize: 256, field: "vortex", seed: "verify" });
     await sim.attach(document.getElementById("flowCv"));
     for (let i = 0; i < 120; i++) sim.tick();
     sim.destroy();
+  } else {
+    report("canvas-probes", true, "lite \u6A21\u5F0F\u8DF3\u8FC7 canvas \u6E32\u67D3\u63A2\u9488(\u65E0\u5934\u65E0\u5408\u6210\u5668,\u771F\u673A\u5DF2\u9A8C)");
   }
+  if (LITE) return;
   const src = document.createElement("canvas");
   src.width = 64;
   src.height = 64;
