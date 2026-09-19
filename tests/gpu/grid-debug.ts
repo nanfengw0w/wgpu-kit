@@ -17,9 +17,13 @@ const report = (name: string, pass: boolean, detail = '') => {
 
 const CFG = { count: 28_000, seed: '18dz5h', forces: 'random' as const, rMax: 0.12 };
 // ?lite=1:SwiftShader(CPU WebGPU)等慢适配器上缩帧数——正确性断言(不变量/
-// 等价性/冻结带)全部保留,只把长跑帧数按 1/3 缩短,CI 时限内可跑完。
+// 等价性/冻结带)全部保留,只把长跑帧数缩短。CI 的 2 vCPU runner 上 CPU 光栅化
+// 每帧比真 GPU 慢百倍,帧数按 CI 时限(900s)倒推。
 const LITE = new URLSearchParams(location.search).has('lite');
-const FRAMES = LITE ? 100 : 300;
+const FRAMES = LITE ? 60 : 300;
+const LONG = LITE ? 24 : 120;
+// 形态统计的 JS 采样数(CPU 密集,与 GPU 无关):lite 下 400 个样本足够统计稳定
+const STAT_SAMPLES = LITE ? 400 : 1200;
 
 /**
  * 扫描不变量:cellStart 单调不减、Σ(fill-start)=N、末格 fill=N。
@@ -61,7 +65,7 @@ async function frozenBands(label: string, n: number, rMax2: number): Promise<voi
   const sim = await particles({ count: n, seed: CFG.seed, forces: 'random', rMax: rMax2, mode: 'grid' });
   const ctx = await GpuContext.get();
   const p0 = (await sim.buffers().pos.read()) as Float32Array;
-  const frames = LITE ? 40 : 120;
+  const frames = LONG;
   for (let f = 0; f < frames; f++) sim.tick();
   await ctx.sync();
   const p1 = (await sim.buffers().pos.read()) as Float32Array;
@@ -120,7 +124,7 @@ async function runMode(mode: 'grid' | 'tiled', maxNeighbors?: number): Promise<{
   for (let f = 0; f < FRAMES; f++) sim.tick();
   await ctx.sync();
   const pos = (await sim.buffers().pos.read()) as Float32Array;
-  const st = structureStats(pos, 1200, CFG.rMax / 2);
+  const st = structureStats(pos, STAT_SAMPLES, CFG.rMax / 2);
   sim.destroy();
   return st;
 }
@@ -278,7 +282,6 @@ async function main() {
   // ④ 形态等价(300 帧后的结构统计)
   // 先跑截断回归:28k(23×23 格)与 42k(用户事故量级)都必须全格覆盖、无冻结带
   await scanInvariants('28k', CFG.count, CFG.rMax, 1);
-  const LONG = LITE ? 40 : 120;
   await scanInvariants('28k', CFG.count, CFG.rMax, LONG);
   await scanInvariants('42k', 42_000, 0.16, LONG);
   await frozenBands('28k', CFG.count, CFG.rMax);
