@@ -340,17 +340,16 @@ var PingPong = class _PingPong {
 init_errors();
 
 // src/core/shader.ts
-var COMPILATION_RETRY_DELAY_MS = 150;
+var CACHE_BYPASS_SUFFIX = "\n// wgpu-kit: compile-info cache bypass";
 async function createShaderModuleChecked(device, code, label) {
-  for (let attempt = 0; ; attempt++) {
-    const module = device.createShaderModule({ code, label });
-    try {
-      const info = await module.getCompilationInfo();
-      return { module, messages: info.messages };
-    } catch (e) {
-      if (attempt >= 1) throw e;
-      await new Promise((r) => setTimeout(r, COMPILATION_RETRY_DELAY_MS));
-    }
+  const module = device.createShaderModule({ code, label });
+  try {
+    const info = await module.getCompilationInfo();
+    return { module, messages: info.messages };
+  } catch {
+    const retryModule = device.createShaderModule({ code: code + CACHE_BYPASS_SUFFIX, label });
+    const info = await retryModule.getCompilationInfo();
+    return { module: retryModule, messages: info.messages };
   }
 }
 
