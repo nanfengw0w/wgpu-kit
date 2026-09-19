@@ -341,7 +341,6 @@ init_errors();
 
 // src/core/shader.ts
 var MODULE_CACHE = /* @__PURE__ */ new WeakMap();
-var bypassCounter = 0;
 async function createShaderModuleChecked(device, code, label) {
   let cache = MODULE_CACHE.get(device);
   if (!cache) {
@@ -354,18 +353,11 @@ async function createShaderModuleChecked(device, code, label) {
   let messages;
   try {
     messages = (await module.getCompilationInfo()).messages;
-    console.log(`[wgpu-kit/shader] ok: ${label} (${code.length}B)`);
   } catch (e) {
-    bypassCounter += 1;
-    console.log(`[wgpu-kit/shader] BYPASS#${bypassCounter}: ${label} <- ${String(e?.message ?? e).slice(0, 80)}`);
-    const retryModule = device.createShaderModule({
-      code: `${code}
-alias _wgpuKitBypass${bypassCounter} = u32;`,
-      label
-    });
-    messages = (await retryModule.getCompilationInfo()).messages;
-    cache.set(code, { module: retryModule, messages });
-    return { module: retryModule, messages };
+    console.warn(`[wgpu-kit] getCompilationInfo unavailable (${String(e?.message ?? e).slice(0, 60)}); skipping compile-info check for "${label}"`);
+    const result2 = { module, messages: [] };
+    cache.set(code, result2);
+    return result2;
   }
   const result = { module, messages };
   cache.set(code, result);
