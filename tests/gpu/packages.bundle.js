@@ -340,17 +340,34 @@ var PingPong = class _PingPong {
 init_errors();
 
 // src/core/shader.ts
-var CACHE_BYPASS_SUFFIX = "\n// wgpu-kit: compile-info cache bypass";
+var MODULE_CACHE = /* @__PURE__ */ new WeakMap();
+var bypassCounter = 0;
 async function createShaderModuleChecked(device, code, label) {
-  const module = device.createShaderModule({ code, label });
-  try {
-    const info = await module.getCompilationInfo();
-    return { module, messages: info.messages };
-  } catch {
-    const retryModule = device.createShaderModule({ code: code + CACHE_BYPASS_SUFFIX, label });
-    const info = await retryModule.getCompilationInfo();
-    return { module: retryModule, messages: info.messages };
+  let cache = MODULE_CACHE.get(device);
+  if (!cache) {
+    cache = /* @__PURE__ */ new Map();
+    MODULE_CACHE.set(device, cache);
   }
+  const hit = cache.get(code);
+  if (hit) return hit;
+  const module = device.createShaderModule({ code, label });
+  let messages;
+  try {
+    messages = (await module.getCompilationInfo()).messages;
+  } catch {
+    bypassCounter += 1;
+    const retryModule = device.createShaderModule({
+      code: `${code}
+alias _wgpuKitBypass${bypassCounter} = u32;`,
+      label
+    });
+    messages = (await retryModule.getCompilationInfo()).messages;
+    cache.set(code, { module: retryModule, messages });
+    return { module: retryModule, messages };
+  }
+  const result = { module, messages };
+  cache.set(code, result);
+  return result;
 }
 
 // src/core/pack.ts
