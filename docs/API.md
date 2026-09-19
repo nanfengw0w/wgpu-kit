@@ -7,7 +7,7 @@
 
 | Import | Contents |
 | --- | --- |
-| [wgpu-kit](#wgpu-kit--kernel-core) | GpuContext · Buffer · elementKernel · PingPong · rawKernel · errors |
+| [wgpu-kit](#wgpu-kit--kernel-core) | GpuContext · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · errors |
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | particle-life simulation with GPU rendering |
 | [wgpu-kit/life](#wgpu-kitlife--artificial-life) | Turing patterns · Physarum · Boids · soft tentacles |
 | [wgpu-kit/fields](#wgpu-kitfields--flow) | vector-field advection trails |
@@ -273,6 +273,112 @@ const double = rawKernel(`
   }
 `);
 await double.run([{ binding: 0, resource: { buffer: myBuffer.gpuBuffer } }], 16);
+```
+
+---
+
+# wgpu-kit · defineSchema
+
+Typed schema layer: declare a field table once and get compile-time TS row
+types, generated WGSL struct code, and typed per-field GPU buffers from the
+same declaration. Eliminates JS/WGSL schema drift and untyped buffer I/O.
+Honest boundary: errors inside WGSL function bodies are still WGSL-compiler
+errors (with your-line mapping); full WGSL type-checking is out of scope.
+
+## defineSchema ( fields ) : Schema
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| fields | `Record<string, ScalarKind>` (const object) | Field names and kinds in declaration order |
+
+`ScalarKind`: `'f32' | 'i32' | 'u32' | 'vec2f' | 'vec2i' | 'vec2u' | 'vec3f' | 'vec4f'`.
+
+### Members
+
+##### .fields : F
+
+The original declaration — feeds `elementKernel`'s `state` directly (names and
+order are the single source of truth).
+
+##### .wgslStruct ( name : string, addressSpace? : 'storage' | 'uniform' ) : string
+
+Generates `struct <name> { … }`. In `'storage'` semantics, `vec3f` members get
+`@size(16)` (WGSL array-element stride rule) so GPU layout can never drift from
+the CPU side.
+
+##### .buffers ( count ) : Promise\<SchemaBuffers\>
+
+Creates one typed buffer per field (matching elementKernel's binding model).
+
+### SchemaBuffers
+
+| Member | Description |
+| --- | --- |
+| `.<fieldName>` | `TypedBuffer<K>` — `write(rows)` / `read(): Promise<rows>` with typed row objects (`{x, y}` for `vec2f`, …); `.raw` is the plain `Buffer` (escape hatch) |
+| `.raws()` | `{ [field]: Buffer }` — pass directly to `elementKernel.run()` |
+| `.destroy()` | Destroys all field buffers |
+
+### Code Example
+
+```ts
+import { defineSchema, elementKernel, type SchemaInfer } from 'wgpu-kit';
+
+const Boid = defineSchema({ pos: 'vec2f', vel: 'vec2f', species: 'u32' });
+type BoidRow = SchemaInfer<typeof Boid.fields>; // { pos: {x,y}, vel: {x,y}, species: number }
+
+const bufs = await Boid.buffers(count);
+bufs.pos.write([{ x: 1, y: 2 }]);               // typo'd key/component = compile error
+const k = elementKernel({ state: Boid.fields, code: 'fn userFn(idx: u32) { … }' });
+await k.run(bufs.raws());
+const rows = await bufs.pos.read();             // typed rows
+```
+
+---
+
+# wgpu-kit · definePack / registerPack
+
+The pack platform: third-party simulations register through the same contract
+the built-in packs use — unified lifecycle, stats, a self-verification
+`probe()`, and a runtime registry.
+
+## PackSim
+
+| Member | Required | Description |
+| --- | --- | --- |
+| `attach?(canvas)` | no | Build a renderer (canvas packs) |
+| `tick()` | yes | Advance one frame (compute + optional render) |
+| `stats?()` | no | Lightweight live stats (`{ fps }` …) |
+| `probe?()` | no | Return physics invariants — the verify harness collects and displays them |
+| `destroy()` | yes | Release all GPU resources |
+
+## definePack ( pack ) : WgpuKitPack
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| pack.name | string | Lowercase identifier; registry namespace |
+| pack.description? | string | Shown by `listPacks()` |
+| pack.create(config?) | function | Returns `Promise<PackSim>` |
+
+## registerPack ( pack ) / getPack ( name ) / listPacks ()
+
+Registry operations. Duplicate registration of the same name throws
+(`UsageError`) — built-ins cannot be shadowed.
+
+### Code Example
+
+```ts
+import { definePack, registerPack, listPacks } from 'wgpu-kit';
+
+const orbit = definePack({
+  name: 'orbit',
+  create: async (config) => ({
+    tick() { /* … */ },
+    async probe() { return { energyDrift: 0.003 }; },
+    destroy() { /* … */ },
+  }),
+});
+registerPack(orbit);
+listPacks(); // includes 'particles', 'fields', 'orbit'
 ```
 
 ---

@@ -51,7 +51,7 @@ await integrate.run({ pos, vel }, { dt: 0.02 });
 
 | 导入 | 用途 |
 | --- | --- |
-| `wgpu-kit` | elementKernel 核心 + Buffer / PingPong / rawKernel |
+| `wgpu-kit` | elementKernel 核心 + Buffer / PingPong / rawKernel + **类型化 schema** + **pack 平台** |
 | `wgpu-kit/particles` | 粒子生命:力矩阵预设、自适应世界、热更新 |
 | `wgpu-kit/life` | 图灵斑图 / 粘菌 / Boids / 软体触手 |
 | `wgpu-kit/fields` | 向量场平迹 |
@@ -66,14 +66,73 @@ await integrate.run({ pos, vel }, { dt: 0.02 });
 
 *life 包:图灵斑图 / 粘菌 / Boids / 软体触手 — [打开演示](https://nanfengw0w.github.io/wgpu-kit/life.html)。*
 
+## 类型化 schema
+
+WGSL 仍是 WGSL,但**字段表不再是会写错的字符串**。声明一次,TS 行类型、
+WGSL struct 代码和 GPU 缓冲全部同源;拼错字段是编辑器里的红线,不是运行时错误:
+
+```ts
+import { defineSchema, elementKernel } from 'wgpu-kit';
+
+const Boid = defineSchema({ pos: 'vec2f', vel: 'vec2f', species: 'u32' });
+type Boid = SchemaInfer<typeof Boid.fields>;   // { pos: {x,y}, vel: {x,y}, species: number }
+
+const bufs = await Boid.buffers(count);
+bufs.pos.write([{ x: 1, y: 2 }, /* … */]);      // ❌ 写成 `{ z: 0 }` 编译期就报
+const k = elementKernel({ state: Boid.fields, code: 'fn userFn(idx: u32) { … }' });
+await k.run(bufs.raws());
+const rows = await bufs.pos.read();             // 返回带类型的行对象
+```
+
+诚实边界:WGSL 函数体**内部**的拼写错误仍由 WGSL 编译器报错(带你的行号映射)。
+完整的 WGSL 类型检查是编译器工程;本层消灭的是 JS/WGSL **schema 漂移**和
+无类型的 buffer 读写。
+
+## 平台,不是功能列表
+
+内置包没有任何特权。`definePack` 就是内置包自己用的契约——统一生命周期、
+统计、自验证 `probe()` 和注册表:
+
+```ts
+import { definePack, registerPack, listPacks } from 'wgpu-kit';
+
+const orbit = definePack({
+  name: 'orbit',
+  description: 'my N-body toy',
+  create: async (config) => {
+    // … 用 elementKernel / rawKernel 搭你的模拟 …
+    return {
+      tick() { /* … */ },
+      async probe() { return { energyDrift: 0.003 }; },  // verify harness 会收集
+      destroy() { /* … */ },
+    };
+  },
+});
+registerPack(orbit);
+listPacks(); // [{ name: 'particles', … }, { name: 'fields', … }, { name: 'orbit', … }]
+```
+
+`probe()` 是平台的关键约定:第三方包在验证 harness 里享受与内置包完全相同
+的待遇——正确性是契约的一部分,不是恩赐。
+
 ## 数字(全部可复现)
 
-| 指标 | 数值 | 环境 |
-| --- | --- | --- |
-| 粒子端到端 | 200,000 @ 122fps · 66,000 @ 144fps(**可见帧**)| RTX 4060 Laptop,playground 实测 |
-| 粒子计算(grid) | 16k→262k 平坦,3.0→4.4ms/帧 | headless 基准,GPU 42°C |
-| 邻域算法 | grid 近似 O(N),66k 时比暴力快 8.5× | 同会话 A/B |
-| 库体积 | core gzip ~10kB(共享上下文构建) | gzip |
+两种口径,都是真实数字,量的是不同的东西,**别混着读**(双口径全表见
+[docs/BENCHMARK.md](docs/BENCHMARK.md),由 `npm run bench` 生成):
+
+- **rAF 吞吐**:每帧 `tick()` 由 rAF 驱动、CPU/GPU 流水线重叠——就是你在
+  playground 里实际看到的 fps(探针:playground URL 加 `?verify=10` 自报);
+- **同步延迟**:每帧 `tick()` 后等 GPU 完成——单帧往返上界,用于算法 A/B。
+
+| 指标 | 数值 | 口径 | 环境 |
+| --- | --- | --- | --- |
+| 粒子端到端 | 200,000 @ ~120fps · 66,000 @ ~144fps | rAF | RTX 4060 Laptop,playground 探针 |
+| 粒子计算(grid)同步 | 16k → 200k:3 → 30ms/帧 | 同步 | `npm run bench` → docs/BENCHMARK.md |
+| 邻域算法 | grid 近似 O(N),66k 时比暴力快 8.5× | 同步 A/B | 同会话 |
+| 库体积 | core gzip ~10kB(共享上下文构建) | — | gzip 预算由 build 强制 |
+
+所以:如果你用每帧 `device.queue.onSubmittedWorkDone()` 去测 grid@200k,
+看到的会是 ~30ms——那是同步延迟列,和 120fps 不矛盾。
 
 ## 三条设计铁律
 

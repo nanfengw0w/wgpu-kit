@@ -4,7 +4,7 @@
  * PingPong、rawKernel 逃生舱、CompileError 行号映射、Usage 校验。
  * 由 harness(scripts/verify.mjs)无头运行;页面契约同 spike。
  */
-import { GpuContext, Buffer, elementKernel, rawKernel, PingPong, CompileError, UsageError } from '../../src/index.ts';
+import { GpuContext, Buffer, elementKernel, rawKernel, PingPong, CompileError, UsageError, defineSchema, type Vec2 } from '../../src/index.ts';
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
 const report = (name: string, pass: boolean, detail = '') => {
@@ -159,6 +159,29 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     got = (await buf.read()) as Float32Array;
     const pass3 = keptOld && got[10] === 30;
     report('kernel-hot-reload', pass1 && pass2 && pass3, `加法=${pass1} 热替换=${pass2} 坏代码保持旧版=${pass3}`);
+  }
+
+  // T8 schema 类型化层:行对象 write/read 往返 + elementKernel 以 schema.fields
+  // 作 state(字段名/顺序同源,raws() 直接喂 run)
+  {
+    const S = defineSchema({ pos: 'vec2f', species: 'u32' });
+    const bufs = await S.buffers(4);
+    bufs.pos.write([{ x: 1, y: 2 }, { x: 3, y: 4 }, { x: 5, y: 6 }, { x: 7, y: 8 }]);
+    bufs.species.write([0, 1, 2, 3]);
+    const k = elementKernel({
+      name: 'schema-double',
+      state: S.fields,
+      code: 'fn userFn(idx: u32) {\n  pos[idx] = pos[idx] * 2.0;\n}',
+    });
+    await k.run(bufs.raws());
+    const rows = await bufs.pos.read();
+    const sp = await bufs.species.read();
+    const roundtrip = rows[1]!.x === 6 && rows[1]!.y === 8 && rows[3]!.x === 14 && rows[3]!.y === 16;
+    const speciesOk = sp[2] === 2;
+    const shapeOk = 'x' in rows[0]! && 'y' in rows[0]!;
+    const dump = rows.map((r) => `${(r as Vec2).x},${(r as Vec2).y}`).join(' ');
+    report('schema-typed-buffers', roundtrip && speciesOk && shapeOk, `往返=${roundtrip} 接入=${speciesOk} 行对象=${shapeOk} dump=[${dump}] sp=[${sp.join(',')}]`);
+    bufs.destroy();
   }
 
   await ctx.sync();

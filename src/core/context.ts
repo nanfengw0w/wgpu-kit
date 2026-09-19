@@ -34,7 +34,12 @@ export class GpuContext {
     if (typeof navigator === 'undefined' || !('gpu' in navigator) || !navigator.gpu) {
       throw new WebGPUUnavailableError('navigator.gpu is not available');
     }
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    // 机器有真 GPU 时 high-performance 命中独显;无 GPU 的 CI/虚拟机/远程桌面
+    // 场景再退到 forceFallbackAdapter(SwiftShader 软件适配器)——正确性一致,
+    // 只是慢,让探针能在任何机器上跑起来而不是直接报"无 WebGPU"。
+    const adapter =
+      (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })) ??
+      (await navigator.gpu.requestAdapter({ forceFallbackAdapter: true }));
     if (!adapter) throw new WebGPUUnavailableError('requestAdapter() 返回 null');
     const info = adapter.info;
     const label = info

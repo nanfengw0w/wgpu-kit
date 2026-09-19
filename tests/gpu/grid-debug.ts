@@ -16,7 +16,10 @@ const report = (name: string, pass: boolean, detail = '') => {
 };
 
 const CFG = { count: 28_000, seed: '18dz5h', forces: 'random' as const, rMax: 0.12 };
-const FRAMES = 300;
+// ?lite=1:SwiftShader(CPU WebGPU)等慢适配器上缩帧数——正确性断言(不变量/
+// 等价性/冻结带)全部保留,只把长跑帧数按 1/3 缩短,CI 时限内可跑完。
+const LITE = new URLSearchParams(location.search).has('lite');
+const FRAMES = LITE ? 100 : 300;
 
 /**
  * 扫描不变量:cellStart 单调不减、Σ(fill-start)=N、末格 fill=N。
@@ -58,7 +61,8 @@ async function frozenBands(label: string, n: number, rMax2: number): Promise<voi
   const sim = await particles({ count: n, seed: CFG.seed, forces: 'random', rMax: rMax2, mode: 'grid' });
   const ctx = await GpuContext.get();
   const p0 = (await sim.buffers().pos.read()) as Float32Array;
-  for (let f = 0; f < 120; f++) sim.tick();
+  const frames = LITE ? 40 : 120;
+  for (let f = 0; f < frames; f++) sim.tick();
   await ctx.sync();
   const p1 = (await sim.buffers().pos.read()) as Float32Array;
   const count = p1.length / 2;
@@ -77,8 +81,10 @@ async function frozenBands(label: string, n: number, rMax2: number): Promise<voi
     means.push(cnt > 0 ? sum / cnt : -1);
   }
   const min = Math.min(...means);
-  const ok = min > 0.02;
-  report(`${label} 冻结带检测`, ok, `各带平均位移 [${means.map((m) => m.toFixed(3)).join(', ')}](最低带阈 0.02)`);
+  // 阈值随帧数线性缩放(120 帧 ≈ 0.02 世界单位)
+  const thresh = frames * 1.7e-4;
+  const ok = min > thresh;
+  report(`${label} 冻结带检测`, ok, `各带平均位移 [${means.map((m) => m.toFixed(3)).join(', ')}](最低带阈 ${thresh.toFixed(3)})`);
   sim.destroy();
 }
 
@@ -272,8 +278,9 @@ async function main() {
   // ④ 形态等价(300 帧后的结构统计)
   // 先跑截断回归:28k(23×23 格)与 42k(用户事故量级)都必须全格覆盖、无冻结带
   await scanInvariants('28k', CFG.count, CFG.rMax, 1);
-  await scanInvariants('28k', CFG.count, CFG.rMax, 120);
-  await scanInvariants('42k', 42_000, 0.16, 120);
+  const LONG = LITE ? 40 : 120;
+  await scanInvariants('28k', CFG.count, CFG.rMax, LONG);
+  await scanInvariants('42k', 42_000, 0.16, LONG);
   await frozenBands('28k', CFG.count, CFG.rMax);
   await frozenBands('42k', 42_000, 0.16);
 

@@ -37,21 +37,28 @@ const MIME = {
   '.wgsl': 'text/plain', '.md': 'text/plain',
 };
 
+const IS_WIN = process.platform === 'win32';
 const BROWSERS = [
   process.env.WGPU_BROWSER,
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+  ...(IS_WIN ? [
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+  ] : [
+    // Linux/CI:PATH 上的裸命令名(spawn 自动解析);runner 镜像预装 google-chrome
+    'google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser',
+  ]),
 ].filter(Boolean);
-const BROWSER = BROWSERS.find((p) => existsSync(p));
+const BROWSER = BROWSERS.find((p) => (p.includes('/') || p.includes('\\') ? existsSync(p) : true));
 if (!BROWSER) {
   console.error('[verify] 未找到 Chrome/Edge,可用 WGPU_BROWSER 环境变量指定路径');
   process.exit(2);
 }
 
 const args = process.argv.slice(2);
-// 支持 --name=value 与 --name value 两种形态
+// 支持 --name=value 与 --name value 两种形态;纯布尔 flag(swiftshader 等)不吞下一个参数
+const VALUE_OPTS = new Set(['timeout', 'shot', 'mode']);
 const opts = {};
 const pageArgs = [];
 for (let i = 0; i < args.length; i++) {
@@ -59,7 +66,8 @@ for (let i = 0; i < args.length; i++) {
   if (a.startsWith('--')) {
     const eq = a.indexOf('=');
     if (eq !== -1) opts[a.slice(2, eq)] = a.slice(eq + 1);
-    else { opts[a.slice(2)] = args[i + 1]; i++; }
+    else if (VALUE_OPTS.has(a.slice(2))) { opts[a.slice(2)] = args[i + 1]; i++; }
+    else opts[a.slice(2)] = true;
   } else pageArgs.push(a);
 }
 const pages = pageArgs;
@@ -83,7 +91,19 @@ function serve(root, port) {
   return new Promise((ok) => server.listen(port, '127.0.0.1', () => ok(server)));
 }
 
-const GPU_ARGS = ['--enable-unsafe-webgpu', '--hide-scrollbars', '--window-size=1280,800'];
+// --swiftshader:强制 WebGPU 走 SwiftShader(CPU 实现),无 GPU 的 CI 上跑探针用。
+// 旗标组合依据 Chromium 现行策略:软件回退必须显式同意(enable-unsafe-swiftshader),
+// Dawn 还要 Vulkan 特性放行;只保证正确性断言,fps 类探针在此模式下没有意义。
+const GPU_ARGS = [
+  '--enable-unsafe-webgpu', '--hide-scrollbars', '--window-size=1280,800',
+  ...(opts.swiftshader ? [
+    '--enable-unsafe-swiftshader',
+    '--use-angle=swiftshader',
+    '--enable-features=Vulkan',
+  ] : []),
+  // CI 备用旗标重试用:WGPU_EXTRA_GPU_ARGS="--use-angle=vulkan" ...
+  ...(process.env.WGPU_EXTRA_GPU_ARGS ? process.env.WGPU_EXTRA_GPU_ARGS.split(' ').filter(Boolean) : []),
+];
 
 /** 申请空闲 TCP 端口(Edge 151 不支持 --remote-debugging-port=0) */
 const freePort = () => new Promise((ok, err) => {
@@ -121,22 +141,31 @@ function cdpConnect(wsUrl) {
 /** 按“命令行含某标记”清扫浏览器进程(标记 = 每次运行唯一的 profile 目录/调试端口) */
 async function sweepByMarker(marker) {
   if (!marker) return;
-  await new Promise((ok) => {
-    const p = spawn('powershell', ['-NoProfile', '-Command',
-      `Get-CimInstance Win32_Process -Filter "Name='msedge.exe' or Name='chrome.exe'" | Where-Object { $_.CommandLine -like '*${marker}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-    ], { stdio: 'ignore' });
-    // 必须等它跑完:harness 退出会带走未完成的清扫子进程(实测教训)
-    p.on('exit', ok);
-    p.on('error', ok);
-    setTimeout(ok, 12000);
-  });
+  if (IS_WIN) {
+    await new Promise((ok) => {
+      const p = spawn('powershell', ['-NoProfile', '-Command',
+        `Get-CimInstance Win32_Process -Filter "Name='msedge.exe' or Name='chrome.exe'" | Where-Object { $_.CommandLine -like '*${marker}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      ], { stdio: 'ignore' });
+      // 必须等它跑完:harness 退出会带走未完成的清扫子进程(实测教训)
+      p.on('exit', ok);
+      p.on('error', ok);
+      setTimeout(ok, 12000);
+    });
+  } else {
+    await new Promise((ok) => {
+      const p = spawn('pkill', ['-f', marker], { stdio: 'ignore' });
+      p.on('exit', ok);
+      p.on('error', ok);
+      setTimeout(ok, 3000);
+    });
+  }
 }
 
 /** 杀掉浏览器整棵进程树。Edge 启动器开完真身即退出 → child.pid 清理时会变尸体;
  *  所以 taskkill 只是尽力而为,真正的保证是按唯一标记的两次清扫。 */
 async function killBrowserTree(child, profile, port) {
   try { child.kill(); } catch { /* noop */ }
-  if (child.pid) {
+  if (IS_WIN && child.pid) {
     try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* noop */ }
   }
   await sweepByMarker(profile);
@@ -200,11 +229,13 @@ async function runCDP(url, { timeout, screenshot }) {
       }
     }
     // 等测试完成
+    let timedOut = false;
     {
       const deadline = Date.now() + timeout;
       for (;;) {
         if (await evl('window.__done === true').catch(() => false)) break;
         if (Date.now() > deadline) {
+          timedOut = true;
           logs.push('[verify] 等待 __done 超时;诊断: ' + await evl(
             `JSON.stringify({url: location.href, readyState: document.readyState, hasGpu: 'gpu' in navigator, boot: window.__boot ?? null, results: window.__results ?? null, done: window.__done ?? null})`,
           ).catch(() => 'n/a'));
@@ -216,6 +247,11 @@ async function runCDP(url, { timeout, screenshot }) {
     await new Promise((r) => setTimeout(r, 300));
     const data = await evl('JSON.stringify({ results: window.__results ?? [], adapter: window.__adapter ?? null })').catch(() => null);
     const parsed = data ? JSON.parse(data) : { results: [], adapter: null };
+    // 超时的页面结果不完整:注入失败标记。否则"挂死但已收集的结果全过"会被
+    // 误判成 OK——CI 上等于给空过开绿灯。
+    if (timedOut) {
+      parsed.results = [...(parsed.results ?? []), { name: 'harness-timeout', pass: false, detail: `页面未在 ${timeout}ms 内置 __done,共收集 ${parsed.results?.length ?? 0} 条结果` }];
+    }
     if (screenshot) {
       const shot = await c.send('Page.captureScreenshot', { format: 'png' }, sessionId);
       await writeFile(resolve(screenshot), Buffer.from(shot.data, 'base64'));
