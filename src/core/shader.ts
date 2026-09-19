@@ -1,23 +1,26 @@
 /**
- * 带一次重试的 shader 编译:CI 的 SwiftShader 上 Dawn 偶发抛
- * "Instance dropped error in getCompilationInfo"(基础设施级抖动,与代码
- * 无关)。Instance 掉了之后同一个 module 再查也会失败,所以重试 = 重建模块。
+ * 带缓存绕行的 shader 编译。CI 的 SwiftShader 上,Dawn 对**相同代码**的模块
+ * 走缓存命中路径,该路径的 getCompilationInfo 偶发(部分环境确定性)抛
+ * "Instance dropped error in getCompilationInfo" —— 实测:同页第 3 次创建
+ * 相同 WGSL 的模块必炸,而首建正常。
+ * 绕行:失败后改用带唯一尾部注释的副本重取编译信息(绕开缓存;注释追加在
+ * 末尾,不改语义、不偏移用户行号)。真有编译错误时 messages 照常返回。
  */
-const COMPILATION_RETRY_DELAY_MS = 150;
+const CACHE_BYPASS_SUFFIX = '\n// wgpu-kit: compile-info cache bypass';
 
 export async function createShaderModuleChecked(
   device: GPUDevice,
   code: string,
   label: string,
 ): Promise<{ module: GPUShaderModule; messages: readonly GPUCompilationMessage[] }> {
-  for (let attempt = 0; ; attempt++) {
-    const module = device.createShaderModule({ code, label });
-    try {
-      const info = await module.getCompilationInfo();
-      return { module, messages: info.messages };
-    } catch (e) {
-      if (attempt >= 1) throw e;
-      await new Promise((r) => setTimeout(r, COMPILATION_RETRY_DELAY_MS));
-    }
+  const module = device.createShaderModule({ code, label });
+  try {
+    const info = await module.getCompilationInfo();
+    return { module, messages: info.messages };
+  } catch {
+    // 缓存命中路径抖动:唯一副本绕行
+    const retryModule = device.createShaderModule({ code: code + CACHE_BYPASS_SUFFIX, label });
+    const info = await retryModule.getCompilationInfo();
+    return { module: retryModule, messages: info.messages };
   }
 }
