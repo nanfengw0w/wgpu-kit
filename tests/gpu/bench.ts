@@ -60,30 +60,34 @@ async function benchCell(cell: Cell): Promise<void> {
   }
   const tSyncDone = performance.now();
   const ms = (performance.now() - t0) / n;
-  // 口径二【端到端吞吐】:rAF 节流、每帧提交不等完成——CPU/GPU 流水线重叠,
-  // 与 playground 实际 fps 同口径(playground 探针实测 200k grid ≈ 120fps)。
-  // 注意背压:rAF 提交快于 GPU 消耗时队列会积压,窗口结束后 drain 是净等待。
+  // 口径二【管线吞吐】:3 帧在途的有界泵送——每帧提交不等完成,在途满 3 帧
+  // 排空一次。量的是 CPU/GPU 重叠下的饱和吞吐。首版用 rAF 节流,但 bench 页
+  // 无 canvas、无视觉变化,headless 合成器约 15s 后停止派发 BeginFrame,rAF
+  // 永久停摆 → 基准卡死;setTimeout 驱动不依赖合成器,且"3 帧在途"既避免
+  // 无界队列积压,又保留流水线重叠。
   const tWin0 = performance.now();
   const fps2 = await new Promise<number>((ok) => {
     let frames = 0;
+    let inFlight = 0;
     const s0 = performance.now();
-    const loop = () => {
+    const step = () => {
+      if (performance.now() - s0 >= 3000) {
+        ctx.sync().then(() => ok(frames / ((performance.now() - s0) / 1000)));
+        return;
+      }
       sim.tick();
       frames++;
-      if (performance.now() - s0 < 3000) requestAnimationFrame(loop);
-      else {
-        ctx.sync().then(() => {
-          ok(frames / ((performance.now() - s0) / 1000));
-        });
-      }
+      inFlight++;
+      if (inFlight >= 3) ctx.sync().then(() => { inFlight = 0; setTimeout(step, 0); });
+      else setTimeout(step, 0);
     };
-    requestAnimationFrame(loop);
+    step();
   });
   const tWin = performance.now() - tWin0;
   sim.destroy();
   const tAll = performance.now() - tCreate;
   const tag = `${cell.mode}@${cell.count.toLocaleString()}${cell.rMax ? ` rMax=${cell.rMax}` : ''}${cell.maxNeighbors ? ` cap=${cell.maxNeighbors}` : ''}`;
-  report(`bench ${tag}`, true, `${ms.toFixed(2)} ms/frame sync · ${fps2.toFixed(1)} fps rAF · 分段:建 ${Math.round(tCreateDone - tCreate)} 预热 ${Math.round(tWarmDone - tCreateDone)} 同步环 ${Math.round(tSyncDone - tWarmDone)} rAF ${Math.round(tWin)} 总 ${Math.round(tAll)}`);
+  report(`bench ${tag}`, true, `${ms.toFixed(2)} ms/frame sync · ${fps2.toFixed(1)} fps 管线(3帧在途) · 分段:建 ${Math.round(tCreateDone - tCreate)} 预热 ${Math.round(tWarmDone - tCreateDone)} 同步环 ${Math.round(tSyncDone - tWarmDone)} 泵送 ${Math.round(tWin)} 总 ${Math.round(tAll)}`);
 }
 
 async function main() {
