@@ -1,5 +1,6 @@
 import { GpuContext } from './context.ts';
 import { CompileError, ERR, UsageError } from './errors.ts';
+import { createShaderModuleChecked } from './shader.ts';
 
 /**
  * rawKernel —— 逃生舱(章程原则 1)。
@@ -22,9 +23,8 @@ export function rawKernel(code: string, entryPoint = 'main', label = 'rawKernel'
       const ctx = await GpuContext.get();
       if (!pipelinePromise) {
         pipelinePromise = (async () => {
-          const module = ctx.device.createShaderModule({ code, label });
-          const info = await module.getCompilationInfo();
-          const errors = info.messages.filter((m) => m.type === 'error');
+          const { module, messages } = await createShaderModuleChecked(ctx.device, code, label);
+          const errors = messages.filter((m) => m.type === 'error');
           if (errors.length > 0) {
             pipelinePromise = null;
             // 实测(Dawn/Edge 151):lineNum 已是 1-based

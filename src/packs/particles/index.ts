@@ -2,6 +2,7 @@ import { GpuContext } from '../../core/context.ts';
 import { Buffer } from '../../core/buffer.ts';
 import { PingPong } from '../../core/pingpong.ts';
 import { CompileError, createComputePipelineChecked } from '../../core/errors.ts';
+import { createShaderModuleChecked } from '../../core/shader.ts';
 import { resolveConfig, type ParticlesConfig, type ResolvedConfig } from './config.ts';
 import { mulberry32, resolveMatrix, hashSeed, type ForceMatrix, type ForcePresetName } from './presets.ts';
 import { simWgsl, WORKGROUP } from './wgsl.ts';
@@ -99,9 +100,8 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
 
   // —— 着色器模块(编译错误 → 行号映射) ——
   const compile = async (code: string, label: string) => {
-    const module = device.createShaderModule({ code, label });
-    const info = await module.getCompilationInfo();
-    const errors = info.messages.filter((m) => m.type === 'error');
+    const { module, messages } = await createShaderModuleChecked(device, code, label);
+    const errors = messages.filter((m) => m.type === 'error');
     if (errors.length > 0) throw new CompileError(label, errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
     return module;
   };

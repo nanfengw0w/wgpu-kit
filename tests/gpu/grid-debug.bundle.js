@@ -305,6 +305,21 @@ var PingPong = class _PingPong {
   }
 };
 
+// src/core/shader.ts
+var COMPILATION_RETRY_DELAY_MS = 150;
+async function createShaderModuleChecked(device, code, label) {
+  for (let attempt = 0; ; attempt++) {
+    const module = device.createShaderModule({ code, label });
+    try {
+      const info = await module.getCompilationInfo();
+      return { module, messages: info.messages };
+    } catch (e) {
+      if (attempt >= 1) throw e;
+      await new Promise((r) => setTimeout(r, COMPILATION_RETRY_DELAY_MS));
+    }
+  }
+}
+
 // src/packs/particles/presets.ts
 var FORCE_PRESETS = {
   /** 经典细胞:小团簇 + 缓慢迁移(spike 验证过的矩阵) */
@@ -1043,9 +1058,8 @@ async function particles(config = {}) {
   };
   writeUniform(cfg.dt);
   const compile = async (code, label) => {
-    const module = device.createShaderModule({ code, label });
-    const info = await module.getCompilationInfo();
-    const errors = info.messages.filter((m) => m.type === "error");
+    const { module, messages } = await createShaderModuleChecked(device, code, label);
+    const errors = messages.filter((m) => m.type === "error");
     if (errors.length > 0) throw new CompileError(label, errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
     return module;
   };

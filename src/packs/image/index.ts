@@ -1,5 +1,6 @@
 import { GpuContext } from '../../core/context.ts';
 import { CompileError } from '../../core/errors.ts';
+import { createShaderModuleChecked } from '../../core/shader.ts';
 
 /**
  * image 包:GPU 图像滤镜管线。source(WebGPU 纹理)→ 逐算子 ping-pong → 目标 canvas。
@@ -62,9 +63,8 @@ export async function applyImage(
     return t;
   };
 
-  const module = device.createShaderModule({ code: shader(), label: 'image-filters' });
-  const info = await module.getCompilationInfo();
-  const errors = info.messages.filter((m) => m.type === 'error');
+  const { module, messages } = await createShaderModuleChecked(device, shader(), 'image-filters');
+  const errors = messages.filter((m) => m.type === 'error');
   if (errors.length > 0) throw new CompileError('image-filters', errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
   const pipeline = device.createRenderPipeline({
     layout: 'auto',

@@ -2,6 +2,7 @@ import { planUniform, packUniformInto, TYPES, type ScalarKind, type UniformLayou
 import { GpuContext } from './context.ts';
 import { Buffer } from './buffer.ts';
 import { CompileError, ERR, UsageError } from './errors.ts';
+import { createShaderModuleChecked } from './shader.ts';
 
 /**
  * elementKernel —— wgpu-kit 的心脏。
@@ -158,10 +159,9 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
   const compilePipeline = async (): Promise<GPUComputePipeline> => {
     const ctx = await GpuContext.get();
     const device = ctx.device;
-    const module = device.createShaderModule({ code: source, label: normalized.name });
+    const { module, messages } = await createShaderModuleChecked(device, source, normalized.name);
     // 捕获编译错误并映射行号
-    const info = await module.getCompilationInfo();
-    const errors = info.messages.filter((m) => m.type === 'error');
+    const errors = messages.filter((m) => m.type === 'error');
     if (errors.length > 0) {
       throw new CompileError(
         normalized.name,
