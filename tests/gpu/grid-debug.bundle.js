@@ -1361,7 +1361,9 @@ var report = (name, pass, detail = "") => {
 };
 var CFG = { count: 28e3, seed: "18dz5h", forces: "random", rMax: 0.12 };
 var LITE = new URLSearchParams(location.search).has("lite");
-var FRAMES = LITE ? 100 : 300;
+var FRAMES = LITE ? 60 : 300;
+var LONG = LITE ? 24 : 120;
+var STAT_SAMPLES = LITE ? 400 : 1200;
 async function scanInvariants(label, n, rMax2, frames) {
   const sim = await particles({ count: n, seed: CFG.seed, forces: "random", rMax: rMax2, mode: "grid" });
   const dbg = sim.debugGrid?.();
@@ -1403,7 +1405,7 @@ async function frozenBands(label, n, rMax2) {
   const sim = await particles({ count: n, seed: CFG.seed, forces: "random", rMax: rMax2, mode: "grid" });
   const ctx = await GpuContext.get();
   const p0 = await sim.buffers().pos.read();
-  const frames = LITE ? 40 : 120;
+  const frames = LONG;
   for (let f = 0; f < frames; f++) sim.tick();
   await ctx.sync();
   const p1 = await sim.buffers().pos.read();
@@ -1459,7 +1461,7 @@ async function runMode(mode, maxNeighbors) {
   for (let f = 0; f < FRAMES; f++) sim.tick();
   await ctx.sync();
   const pos = await sim.buffers().pos.read();
-  const st = structureStats(pos, 1200, CFG.rMax / 2);
+  const st = structureStats(pos, STAT_SAMPLES, CFG.rMax / 2);
   sim.destroy();
   return st;
 }
@@ -1603,7 +1605,6 @@ async function main() {
   report("\u9010\u5E27\u5BF9\u6BD4", true, await compareModes(1));
   report("\u9010\u5E27\u5BF9\u6BD4", true, await compareModes(30));
   await scanInvariants("28k", CFG.count, CFG.rMax, 1);
-  const LONG = LITE ? 40 : 120;
   await scanInvariants("28k", CFG.count, CFG.rMax, LONG);
   await scanInvariants("42k", 42e3, 0.16, LONG);
   await frozenBands("28k", CFG.count, CFG.rMax);

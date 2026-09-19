@@ -17,9 +17,10 @@ jobs:
   # GPU 正确性探针:runner 无独显,用 Chrome 内置的 SwiftShader(CPU 实现的
   # WebGPU)跑。抓的是逻辑/物理正确性(扫描不变量、grid==tiled==CPU、冻结带),
   # 不测性能(fps 类探针只在真机上跑,见 scripts/verify.mjs)。
+  # CPU 光栅化每帧比真 GPU 慢百倍:grid-debug 用 ?lite=1 缩帧 + 独立长超时。
   gpu-probes:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,15 +29,19 @@ jobs:
       - run: npm run bundle:tests
       - name: Confirm Chrome
         run: google-chrome --version
-      - name: Correctness probes (SwiftShader WebGPU)
+      - name: Fast probes (SwiftShader WebGPU)
         run: >-
           node scripts/verify.mjs --swiftshader
           tests/gpu/smoke.html
           tests/gpu/packages.html
+          --timeout=120000
+      - name: Grid physics probes (SwiftShader WebGPU, lite)
+        run: >-
+          node scripts/verify.mjs --swiftshader
           "tests/gpu/grid-debug.html?lite=1"
-          --timeout=420000
+          --timeout=900000
       # SwiftShader 在不同 Chrome 版本上的 ANGLE 后端行为有差异:主配方失败时
-      # 换 Vulkan 直连 + Dawn 软件适配器放行再试一次,均为社区验证过的组合。
+      # 换 Vulkan 直连再试一次,均为社区验证过的组合。
       - name: Retry with alternate ANGLE backend
         if: failure()
         env:
@@ -46,4 +51,4 @@ jobs:
           tests/gpu/smoke.html
           tests/gpu/packages.html
           "tests/gpu/grid-debug.html?lite=1"
-          --timeout=420000
+          --timeout=900000
