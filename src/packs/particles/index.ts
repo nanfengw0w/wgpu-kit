@@ -96,7 +96,7 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
     v.setUint32(44, Math.ceil(cfg.maxNeighbors / 9), true); // 每格候选上限
     device.queue.writeBuffer(uniform, 0, buf);
   };
-  writeUniform(cfg.dt);
+  writeUniform(phys.dt);
 
   // —— 着色器模块(编译错误 → 行号映射) ——
   const compile = async (code: string, label: string) => {
@@ -282,7 +282,9 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
     },
 
     tick(dtMultiplier = 1): void {
-      const dt = cfg.dt * dtMultiplier;
+      // dt 单一事实来源是 phys(setParams 的写入目标);此前读 cfg.dt,导致
+      // setParams({dt}) 快照变了、行为不变(死参数)
+      const dt = phys.dt * dtMultiplier;
       writeUniform(dt);
       const useAB = frame % 2 === 0;
       const read = useAB ? sideA : sideB;
@@ -335,10 +337,13 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         device.queue.submit([enc.finish()]);
       }
 
-      // 渲染刚写入的一侧(队列顺序保证 compute 先行),再翻转
-      // 渲染刚写入的一侧(useAB 时写入 other;!useAB 时写入 current)——
-      // 旧代码相位错位,隔帧才显示新状态(v0.9.7 引入的回归,评审 #4)
-      const writtenSide = useAB ? pp.other : pp.current;
+      // 渲染刚写入的一侧(队列顺序保证 compute 先行),再翻转。
+      // 写侧恒为 swap 前的 pp.other:compute 读 `read = useAB ? sideA : sideB`,
+      // 而 pp.other 与 sideA/sideB 的补集逐帧严格对应(index 从 0 起每帧翻转,
+      // 与 useAB=frame%2===0 恒互补)。此前的 `useAB ? pp.other : pp.current`
+      // 把"固定 A/B 引用"和"随 swap 翻转的 current/other"两套翻转混用,
+      // 奇数帧渲染上一帧状态(序列 1,1,3,3…),且注释谎称已修 —— 评审实测表。
+      const writtenSide = pp.other;
       renderer?.render(writtenSide.pos, writtenSide.vel);
       pp.swap();
       frame++;

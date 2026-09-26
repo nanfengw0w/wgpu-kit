@@ -145,9 +145,11 @@ export function defineSchema<const F extends Record<string, ScalarKind>>(fields:
       }
       const lines = keys.map((k) => {
         const def = TYPES[fields[k]!];
-        // vec3f 在数组元素语义下步长 16 —— 显式 @size 让 GPU/CPU 永不漂移
-        const pad = addressSpace === 'storage' && def.stride !== def.size ? ` @size(${def.stride})` : '';
-        return `  ${k}:${pad} ${def.wgsl},`;
+        // WGSL 语法:成员属性在成员名**之前**(@size(16) home: vec3f)。
+        // storage 数组元素语义下 vec3f 步长 16,显式 @size 让 GPU/CPU 布局
+        // 永不漂移;生成的 struct 由 smoke 探针经真实编译器验证。
+        const attr = addressSpace === 'storage' && def.stride !== def.size ? `@size(${def.stride}) ` : '';
+        return `  ${attr}${k}: ${def.wgsl},`;
       });
       return `struct ${name} {\n${lines.join('\n')}\n}`;
     },
