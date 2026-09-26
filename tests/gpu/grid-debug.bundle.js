@@ -1393,7 +1393,7 @@ var report = (name, pass, detail = "") => {
 };
 var CFG = { count: 28e3, seed: "18dz5h", forces: "random", rMax: 0.12 };
 var LITE = new URLSearchParams(location.search).has("lite");
-var FRAMES = LITE ? 60 : 300;
+var FRAMES = LITE ? 30 : 300;
 var LONG = LITE ? 24 : 120;
 var STAT_SAMPLES = LITE ? 400 : 1200;
 async function scanInvariants(label, n, rMax2, frames) {
