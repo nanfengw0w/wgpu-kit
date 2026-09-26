@@ -20,7 +20,7 @@ const CFG = { count: 28_000, seed: '18dz5h', forces: 'random' as const, rMax: 0.
 // 等价性/冻结带)全部保留,只把长跑帧数缩短。CI 的 2 vCPU runner 上 CPU 光栅化
 // 每帧比真 GPU 慢百倍,帧数按 CI 时限(900s)倒推。
 const LITE = new URLSearchParams(location.search).has('lite');
-const FRAMES = LITE ? 60 : 300;
+const FRAMES = LITE ? 30 : 300;
 const LONG = LITE ? 24 : 120;
 // 形态统计的 JS 采样数(CPU 密集,与 GPU 无关):lite 下 400 个样本足够统计稳定
 const STAT_SAMPLES = LITE ? 400 : 1200;
