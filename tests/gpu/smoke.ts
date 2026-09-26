@@ -4,7 +4,7 @@
  * PingPong、rawKernel 逃生舱、CompileError 行号映射、Usage 校验。
  * 由 harness(scripts/verify.mjs)无头运行;页面契约同 spike。
  */
-import { GpuContext, Buffer, elementKernel, rawKernel, PingPong, CompileError, UsageError, defineSchema, type Vec2 } from '../../src/index.ts';
+import { GpuContext, Buffer, elementKernel, rawKernel, PingPong, CompileError, UsageError, defineSchema, particles, type Vec2 } from '../../src/index.ts';
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
 const report = (name: string, pass: boolean, detail = '') => {
@@ -182,6 +182,63 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     const dump = rows.map((r) => `${(r as Vec2).x},${(r as Vec2).y}`).join(' ');
     report('schema-typed-buffers', roundtrip && speciesOk && shapeOk, `往返=${roundtrip} 接入=${speciesOk} 行对象=${shapeOk} dump=[${dump}] sp=[${sp.join(',')}]`);
     bufs.destroy();
+  }
+
+  // T9 生成的 WGSL struct 经**真实编译器**验证(双地址空间)
+  // 背景:wgslStruct 曾生成属性后置的非法 WGSL(home: @size(16) vec3f),
+  // 单测期望串镜像了同一个错误 —— 字符串比较不等于正确性,必须过编译器。
+  {
+    const S = defineSchema({ home: 'vec3f', mass: 'f32' });
+    let ok = true;
+    let why = '';
+    for (const space of ['storage', 'uniform'] as const) {
+      const decl = space === 'storage'
+        ? 'var<storage, read_write> data: array<S>;'
+        : 'var<uniform> params: S;';
+      const code = `${S.wgslStruct('S', space)}\n@group(0) @binding(0) ${decl}\n@compute @workgroup_size(1)\nfn main() {}\n`;
+      const m = ctx.device.createShaderModule({ code, label: `schema-struct-${space}` });
+      const info = await m.getCompilationInfo();
+      const errs = info.messages.filter((x) => x.type === 'error');
+      if (errs.length > 0) { ok = false; why = `${space}: ${errs[0]!.message.slice(0, 100)}`; break; }
+    }
+    report('schema-struct-compiles', ok, ok ? 'storage+uniform 双语义真实编译通过' : why);
+  }
+
+  // T10 setParams({dt}) 必须真实生效:与"构造参数即目标值"的实例逐位一致
+  // 背景:tick 曾读 cfg.dt 而 setParams 写 phys.dt —— 快照变了行为不变(死参数)
+  {
+    const base = { count: 256, mode: 'n2' as const, seed: 'dt-check', forces: 'random' as const };
+    const a = await particles({ ...base, dt: 0.05 });
+    const b = await particles({ ...base, dt: 0.02 });
+    b.setParams({ dt: 0.05 });
+    a.tick();
+    b.tick();
+    const pa = (await a.buffers().pos.read()) as Float32Array;
+    const pb = (await b.buffers().pos.read()) as Float32Array;
+    let maxD = 0;
+    for (let i = 0; i < pa.length; i++) maxD = Math.max(maxD, Math.abs(pa[i]! - pb[i]!));
+    report('setparams-dt-effective', maxD < 1e-6, `max|Δpos|=${maxD.toExponential(2)}(阈 1e-6;死参数时为有限差)`);
+    a.destroy();
+    b.destroy();
+  }
+
+  // T11 注释提及未用字段不得使内核失效(此前注释里的词被当作"已使用")
+  {
+    const n = 32;
+    const out = await Buffer.create('f32', n);
+    const inp = await Buffer.create('f32', n);
+    inp.write(new Float32Array(n).map((_, i) => i));
+    const k = elementKernel({
+      name: 'comment-mention',
+      state: { out: 'f32' },
+      inputs: { a: 'f32', vel: 'f32' },
+      code: '// vel is intentionally unused\nfn userFn(idx: u32) {\n  out[idx] = a[idx] + 1.0;\n}',
+    });
+    await k.run({ out, a: inp, vel: inp });
+    const got = (await out.read()) as Float32Array;
+    report('comment-field-ignored', got[5] === 6, `out[5]=${got[5]}(期 6;注释提及未用字段不得使 bind group 失配)`);
+    out.destroy();
+    inp.destroy();
   }
 
   await ctx.sync();

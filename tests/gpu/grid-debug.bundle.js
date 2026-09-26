@@ -1074,7 +1074,7 @@ async function particles(config = {}) {
     v.setUint32(44, Math.ceil(cfg.maxNeighbors / 9), true);
     device.queue.writeBuffer(uniform, 0, buf);
   };
-  writeUniform(cfg.dt);
+  writeUniform(phys.dt);
   const compile = async (code, label) => {
     const { module, messages } = await createShaderModuleChecked(device, code, label);
     const errors = messages.filter((m) => m.type === "error");
@@ -1253,7 +1253,7 @@ async function particles(config = {}) {
       });
     },
     tick(dtMultiplier = 1) {
-      const dt = cfg.dt * dtMultiplier;
+      const dt = phys.dt * dtMultiplier;
       writeUniform(dt);
       const useAB = frame % 2 === 0;
       const read = useAB ? sideA : sideB;
@@ -1297,7 +1297,7 @@ async function particles(config = {}) {
         pass.end();
         device.queue.submit([enc.finish()]);
       }
-      const writtenSide = useAB ? pp.other : pp.current;
+      const writtenSide = pp.other;
       renderer?.render(writtenSide.pos, writtenSide.vel);
       pp.swap();
       frame++;

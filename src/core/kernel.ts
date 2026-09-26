@@ -96,8 +96,11 @@ export function generateElementKernel(spec: ElementKernelSpec): {
   // —— 静态使用分析:layout:'auto' 的绑定组布局只含入口点**实际引用**的绑定。
   // 声明了但 userFn 没用到的字段若塞进 bind group → 校验错误且被异步吞掉
   // (表现为核不生效)。头文件由我们生成,字段是否使用等价于其名字是否作为
-  // 词法 token 出现在用户代码里。params(binding 0)因 params.count 恒被使用。
-  const wordInCode = (n: string) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(spec.code);
+  // 词法 token 出现在**剥离注释后**的代码里 —— WGSL 解析器剥注释,注释里
+  // 提及字段名(如 "// vel is intentionally unused")不构成使用。
+  // params(binding 0)因 params.count 恒被使用。
+  const codeNoComments = spec.code.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ');
+  const wordInCode = (n: string) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(codeNoComments);
   const usedBindings = new Set<number>([0]);
   {
     let b = 1;
