@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { definePack, registerPack, getPack, listPacks } from '../src/core/pack.ts';
+import { definePack, registerPack, getUserPack, listUserPacks } from '../src/core/pack.ts';
 import { UsageError } from '../src/core/errors.ts';
 
 const fakeSim = () => ({ tick() {}, destroy() {} });
@@ -15,8 +15,8 @@ describe('pack 平台契约', () => {
   it('注册表:注册/枚举/防重复/防覆盖', () => {
     const p = definePack({ name: 'test-pack-a', create: async () => fakeSim() });
     registerPack(p);
-    expect(getPack('test-pack-a')?.name).toBe('test-pack-a');
-    expect(listPacks().some((x) => x.name === 'test-pack-a')).toBe(true);
+    expect(getUserPack('test-pack-a')?.name).toBe('test-pack-a');
+    expect(listUserPacks().some((x) => x.name === 'test-pack-a')).toBe(true);
     expect(() => registerPack(p)).toThrow(UsageError);
   });
 
