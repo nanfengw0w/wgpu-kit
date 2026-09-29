@@ -1,6 +1,6 @@
 /**
- * Pack 平台契约:第三方在 core 之上写自己的模拟包,与内置包(particles/life/
- * fields)平级注册、平级验证。这是"功能集 → 平台"的那一步。
+ * Pack 平台契约:第三方在 core 之上写自己的模拟包,与内置包(particles)
+ * 平级注册、平级验证。这是"功能集 → 平台"的那一步。
  *
  * 契约只有三条(章程原则 2:错误说人话;原则 3:可验证):
  *   ① create(config) → PackSim:统一的生命周期(attach/tick/stats/destroy);

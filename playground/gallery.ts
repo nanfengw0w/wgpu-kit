@@ -11,10 +11,6 @@ const CURATED: Card[] = [
   { name: 'ORBITALS UNIVERSE', url: './index.html?p=orbitals&m=grid&n=66000&s=kepler' },
   { name: 'VIRUSES UNIVERSE', url: './index.html?p=viruses&m=grid&n=66000&s=phage' },
   { name: 'RANDOM MATRIX UNIVERSE', url: './index.html?p=random&m=grid&n=66000&s=meow' },
-  { name: 'TURING · CORAL', url: './life.html?sim=turing' },
-  { name: 'PHYSARUM NETWORK', url: './life.html?sim=physarum' },
-  { name: 'BOIDS FLOCK', url: './life.html?sim=boids' },
-  { name: 'SOFT TENTACLES', url: './life.html?sim=tentacles' },
 ];
 
 function favList(): Card[] {
@@ -70,7 +66,7 @@ document.getElementById('importBtn')!.onclick = () => {
   const input = document.getElementById('paste') as HTMLInputElement;
   const url = input.value.trim();
   if (!url) return;
-  const ok = url.includes('index.html?') || url.includes('life.html?');
+  const ok = url.includes('index.html?');
   if (!ok) { report('gallery-import-bad', false, url.slice(0, 60)); return; }
   const list = favList();
   list.unshift({ name: `IMPORT · ${new URL(url, location.href).searchParams.get('p') ?? 'demo'}`, url: new URL(url, location.href).href });
