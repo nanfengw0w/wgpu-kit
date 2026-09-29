@@ -4,6 +4,7 @@ import { PingPong } from '../../core/pingpong.ts';
 import { CompileError, createComputePipelineChecked } from '../../core/errors.ts';
 import { createShaderModuleChecked } from '../../core/shader.ts';
 import { resolveConfig, type ParticlesConfig, type ResolvedConfig } from './config.ts';
+export type { ParticlesConfig };
 import { mulberry32, resolveMatrix, hashSeed, type ForceMatrix, type ForcePresetName } from './presets.ts';
 import { simWgsl, WORKGROUP } from './wgsl.ts';
 import { gridCountsWgsl, gridScanPostWgsl, gridScatterWgsl, gridForceWgsl } from './grid.ts';

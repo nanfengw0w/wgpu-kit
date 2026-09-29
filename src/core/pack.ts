@@ -52,10 +52,11 @@ export function registerPack<TConfig, TSim extends PackSim>(pack: WgpuKitPack<TC
   REGISTRY.set(pack.name, pack as unknown as WgpuKitPack<unknown, PackSim>);
 }
 
-export function getPack(name: string): WgpuKitPack<unknown, PackSim> | undefined {
+export function getUserPack(name: string): WgpuKitPack<unknown, PackSim> | undefined {
   return REGISTRY.get(name);
 }
 
-export function listPacks(): Array<{ name: string; description: string }> {
+/** 仅用户注册的包。内置包由根入口静态合成(v2.0:消除顶层副作用,tree-shake 安全) */
+export function listUserPacks(): Array<{ name: string; description: string }> {
   return [...REGISTRY.values()].map((p) => ({ name: p.name, description: p.description ?? '' }));
 }
