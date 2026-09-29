@@ -283,6 +283,51 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     inp.destroy();
   }
 
+  // T11b 未调用 helper 中的字段不算使用(外部审查 P1-3):
+  // unusedHelper 定义了但 main 不可达,其中引用的 ghost 不得进 bind group
+  {
+    const n = 32;
+    const out = await Buffer.create('f32', n);
+    const inp = await Buffer.create('f32', n);
+    inp.write(new Float32Array(n).map((_, i) => i));
+    const ghost = await Buffer.create('f32', n);
+    const k = elementKernel({
+      name: 'ghost-helper',
+      state: { out: 'f32', ghost: 'f32' },
+      inputs: { a: 'f32' },
+      code: 'fn unusedHelper(idx: u32) {\n  ghost[idx] = 0.0;\n}\nfn userFn(idx: u32) {\n  out[idx] = a[idx] + 2.0;\n}',
+    });
+    await k.run({ out, a: inp, ghost });
+    const got = (await out.read()) as Float32Array;
+    report('dead-helper-field-ignored', got[5] === 7, `out[5]=${got[5]}(期 7;死代码里的字段不进布局)`);
+    out.destroy();
+    inp.destroy();
+    ghost.destroy();
+  }
+
+  // T11c encode-once-per-submit 合同(外部审查 P1-2):
+  // 提交前对同一实例重复 encode 必须抛 UsageError(共享 uniform 快照语义)
+  {
+    const out = await Buffer.create('f32', 8);
+    const k = elementKernel({ name: 'twice-encode', state: { out: 'f32' }, code: 'fn userFn(idx: u32) { out[idx] = 1.0; }' });
+    await k.prepare();
+    const enc = ctx.device.createCommandEncoder();
+    k.encode(enc, { out });
+    let threw = false;
+    try {
+      k.encode(enc, { out });
+    } catch (e) {
+      threw = e instanceof UsageError;
+    }
+    // 结束本次合同周期后正常路径应恢复
+    ctx.device.queue.submit([enc.finish()]);
+    k.endSubmit();
+    await k.run({ out });
+    const normal = ((await out.read()) as Float32Array)[0] === 1;
+    report('encode-once-guard', threw && normal, `重复 encode 抛错=${threw} 提交后恢复=${normal}`);
+    out.destroy();
+  }
+
   // T12 向量 uniform:setParams 式传值 {x,y},kernel 以 vec2f 形参消费
   {
     const buf = await Buffer.create('vec2f', 4);
