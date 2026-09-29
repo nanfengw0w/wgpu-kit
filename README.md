@@ -144,7 +144,7 @@ const orbit = definePack({
   },
 });
 registerPack(orbit);
-listPacks(); // [{ name: 'particles', … }, { name: 'fields', … }, { name: 'orbit', … }]
+listPacks(); // [{ name: 'particles', … }, { name: 'orbit', … }]
 ```
 
 `probe()` is the platform deal: a third-party pack gets the same treatment in

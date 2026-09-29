@@ -34,6 +34,10 @@ export interface ElementKernel {
   readonly uniformLayout: UniformLayout;
   readonly workgroupSize: number;
   run(resources: Record<string, Buffer>, uniforms?: Record<string, number>): Promise<void>;
+  /** [v2.0] 异步准备:解析上下文、编译管线、分配内部资源。幂等;encode 前必须完成 */
+  prepare(): Promise<void>;
+  /** [v2.0] 同步编码:dispatch 写入调用方 encoder(不提交);须先 prepare() */
+  encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms?: Record<string, number>): void;
   /** 热重载:替换用户函数并重建管线;编译失败时抛错且内核保持旧版 */
   replace(code: string): Promise<void>;
   destroy(): void;
@@ -155,6 +159,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
   const sharedPack = new ArrayBuffer(uniformLayout.size); // 复用打包缓冲(writeBuffer 会拷贝)
 
   let pipelinePromise: Promise<GPUComputePipeline> | null = null;
+  let pipeline: GPUComputePipeline | null = null; // resolve 后的同步引用(encode 用)
   let cachedCtx: GpuContext | null = null; // 首帧后缓存为普通引用
   const bindGroupCache = new Map<number, { bg: GPUBindGroup; ids: readonly number[] }>();
   let uniformBuffer: GPUBuffer | null = null;
@@ -175,11 +180,24 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
     return device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
   };
 
+  const ensureUniformBuffer = (device: GPUDevice): GPUBuffer => {
+    if (!uniformBuffer) {
+      uniformBuffer = device.createBuffer({
+        size: uniformLayout.size,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: uniformBufferName,
+      });
+    }
+    return uniformBuffer;
+  };
+
   async function getPipeline(): Promise<GPUComputePipeline> {
+    if (pipeline) return pipeline;
     if (!pipelinePromise) {
       pipelinePromise = compilePipeline().catch((e) => { pipelinePromise = null; throw e; });
     }
-    return pipelinePromise;
+    pipeline = await pipelinePromise;
+    return pipeline;
   }
 
   return {
@@ -200,6 +218,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       try {
         const p = await compilePipeline();
         pipelinePromise = Promise.resolve(p);
+        pipeline = p;
         bindGroupCache.clear();
       } catch (e) {
         source = savedSource;
@@ -209,10 +228,22 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       }
     },
 
-    async run(resources: Record<string, Buffer>, uniforms: Record<string, number> = {}): Promise<void> {
-      if (!cachedCtx) cachedCtx = await GpuContext.get();
+    async prepare(): Promise<void> {
+      cachedCtx ??= await GpuContext.get();
+      await getPipeline();
+      ensureUniformBuffer(cachedCtx.device);
+    },
+
+    /**
+     * [v2.0] 同步编码:把 dispatch 命令写入调用方的 encoder,不提交。
+     * 多个 kernel 可写入同一 encoder 组成计算链,由调用方决定提交时机。
+     * 前置条件:prepare() 已完成(否则内部管线/uniform 资源尚未就绪)。
+     */
+    encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms: Record<string, number> = {}): void {
+      if (!cachedCtx || !pipeline || !uniformBuffer) {
+        throw new UsageError(ERR.USAGE, `kernel "${normalized.name}".encode called before prepare() — await kernel.prepare() first`);
+      }
       const device = cachedCtx.device;
-      const pipeline = await getPipeline();
 
       // —— 资源校验 + 有序收集(预展开清单,稳态零分配) ——
       const ordered: Buffer[] = [];
@@ -262,14 +293,19 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
         bindGroupCache.set(cacheKey, { bg, ids });
       }
 
-      // —— 编码提交 ——
-      const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
+      // —— 写入调用方 encoder(不提交) ——
+      const pass = encoder.beginComputePass();
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bg);
       pass.dispatchWorkgroups(Math.ceil(count / normalized.workgroupSize));
       pass.end();
-      device.queue.submit([enc.finish()]);
+    },
+
+    async run(resources: Record<string, Buffer>, uniforms: Record<string, number> = {}): Promise<void> {
+      await this.prepare();
+      const enc = cachedCtx!.device.createCommandEncoder();
+      this.encode(enc, resources, uniforms);
+      cachedCtx!.device.queue.submit([enc.finish()]);
     },
 
     destroy(): void {
