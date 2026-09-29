@@ -53,18 +53,11 @@ await integrate.run({ pos, vel }, { dt: 0.02 });
 | --- | --- |
 | `wgpu-kit` | elementKernel 核心 + Buffer / PingPong / rawKernel + **类型化 schema** + **pack 平台** |
 | `wgpu-kit/particles` | 粒子生命:力矩阵预设、自适应世界、热更新 |
-| `wgpu-kit/life` | 图灵斑图 / 粘菌 / Boids / 软体触手 |
-| `wgpu-kit/fields` | 向量场平迹 |
-| `wgpu-kit/image` | GPU 滤镜管线(blur/sharpen/edge/…) |
 | `wgpu-kit/react` | `<ParticleCanvas />` |
 | `wgpu-kit/three` | three.js 快照互通 |
 | `wgpu-kit/media` | 画布录制(webm/mp4) |
 | `wgpu-kit/observe` | GPU 计时 / 设备诊断 / 画布助手 |
 | `wgpu-kit/vite` | WGSL kernel 热重载 |
-
-![life quartet](life-quartet.png)
-
-*life 包:图灵斑图 / 粘菌 / Boids / 软体触手 — [打开演示](https://nanfengw0w.github.io/wgpu-kit/life.html)。*
 
 ## 类型化 schema
 

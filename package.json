@@ -1,6 +1,6 @@
 {
   "name": "wgpu-kit",
-  "version": "1.1.3",
+  "version": "2.0.0",
   "description": "Creative-coding GPU toolkit for the browser. 200k-particle physics at 120fps in 5 lines of code. WebGPU compute without the boilerplate.",
   "type": "module",
   "license": "MIT",
@@ -31,21 +31,9 @@
       "types": "./dist/interop/three.d.ts",
       "import": "./dist/interop/three.js"
     },
-    "./life": {
-      "types": "./dist/packs/life/index.d.ts",
-      "import": "./dist/packs/life/index.js"
-    },
     "./react": {
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js"
-    },
-    "./fields": {
-      "types": "./dist/packs/fields/index.d.ts",
-      "import": "./dist/packs/fields/index.js"
-    },
-    "./image": {
-      "types": "./dist/packs/image/index.d.ts",
-      "import": "./dist/packs/image/index.js"
     },
     "./media": {
       "types": "./dist/media.d.ts",

@@ -20,6 +20,27 @@ async function main() {
   (window as any).__adapter = ctx.adapterInfo;
   report('context-adapter', true, ctx.adapterInfo);
 
+  // T1b 纹理读写回裸诊断(原 packages 页迁移):writeTexture → copyTextureToBuffer → mapAsync
+  {
+    const t = ctx.device.createTexture({ size: [4, 4], format: 'rgba8unorm', usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
+    ctx.device.queue.writeTexture({ texture: t }, new Uint8Array([
+      255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,255,255,
+      1,2,3,255, 5,6,7,255, 9,10,11,255, 13,14,15,255,
+      16,17,18,255, 19,20,21,255, 22,23,24,255, 25,26,27,255,
+      28,29,30,255, 31,32,33,255, 33,34,35,255, 37,38,39,255,
+    ]), { bytesPerRow: 16, rowsPerImage: 4 }, [4, 4]);
+    const staging = ctx.device.createBuffer({ size: 256 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = ctx.device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: t }, { buffer: staging, bytesPerRow: 256, rowsPerImage: 4 }, [4, 4]);
+    ctx.device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(staging.getMappedRange().slice(0));
+    staging.unmap();
+    report('gpu-texture-roundtrip', px[0] === 255 && px[4] === 0 && px[256] === 1, `R=${px[0]} G=${px[1]} 第二行首=${px[256]}`);
+    t.destroy();
+    staging.destroy();
+  }
+
   // T1 向量加:inputs 只读 + state 写出
   {
     const n = 4096;

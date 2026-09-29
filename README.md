@@ -93,18 +93,11 @@ to compile, the error points at **your line**.
 | --- | --- |
 | `wgpu-kit` | elementKernel core + Buffer / PingPong / rawKernel + **typed schemas** + **pack platform** |
 | `wgpu-kit/particles` | particle life: presets, adaptive world, live updates |
-| `wgpu-kit/life` | Turing patterns / Physarum / Boids / Tentacles |
-| `wgpu-kit/fields` | vector-field advection trails |
-| `wgpu-kit/image` | GPU filter pipeline (blur/sharpen/edge/…) |
 | `wgpu-kit/react` | `<ParticleCanvas />` |
 | `wgpu-kit/three` | three.js snapshot interop |
 | `wgpu-kit/media` | canvas recording (webm/mp4) |
 | `wgpu-kit/observe` | GPU timing / device diagnostics / canvas helpers |
 | `wgpu-kit/vite` | WGSL kernel hot reload |
-
-![life quartet](life-quartet.png)
-
-*The life pack: Turing patterns / Physarum / Boids / Tentacles — [open the demo](https://nanfengw0w.github.io/wgpu-kit/life.html).*
 
 ## Type-safe schemas
 
