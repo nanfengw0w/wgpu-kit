@@ -69,38 +69,67 @@ const PACKERS: Record<string, (v: DataView, o: number, x: number) => void> = {
   u32: (v, o, x) => v.setUint32(o, x, true),
 };
 
+const COMP_NAMES = ['x', 'y', 'z', 'w'] as const;
+const KIND_COMPS: Record<ScalarKind, number> = {
+  f32: 1, i32: 1, u32: 1, vec2f: 2, vec2i: 2, vec2u: 2, vec3f: 3, vec4f: 4,
+};
+/** 向量分量的标量类型 */
+const VEC_BASE: Record<string, 'f32' | 'i32' | 'u32'> = {
+  vec2f: 'f32', vec2i: 'i32', vec2u: 'u32', vec3f: 'f32', vec4f: 'f32',
+};
+
+/** [v2.0] 标量或向量(vec2/3/4,值形如 {x,y,z,w})统一打包 */
+function packField(view: DataView, f: UniformField, value: unknown): void {
+  const comps = KIND_COMPS[f.kind];
+  // 向量分量的标量类型:vec2f/vec3f/vec4f → f32,vec2i → i32,vec2u → u32
+  const pack = PACKERS[VEC_BASE[f.kind] ?? f.kind];
+  if (!pack) {
+    throw new UsageError(ERR.UNIFORM_UNSUPPORTED, `Uniform field "${f.name}" has unsupported type "${f.kind}"`);
+  }
+  if (comps === 1) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new UsageError(ERR.UNIFORM_FIELD, `Uniform value for "${f.name}" must be a finite number, got: ${String(value)}`);
+    }
+    pack(view, f.offset, value);
+    return;
+  }
+  if (typeof value !== 'object' || value === null) {
+    throw new UsageError(ERR.UNIFORM_FIELD, `Uniform "${f.name}" (${f.kind}) expects an object with ${comps} components, got: ${typeof value}`);
+  }
+  const rec = value as Record<string, unknown>;
+  for (let c = 0; c < comps; c++) {
+    const cv = rec[COMP_NAMES[c]!];
+    if (typeof cv !== 'number' || !Number.isFinite(cv)) {
+      throw new UsageError(ERR.UNIFORM_FIELD, `Uniform "${f.name}" component "${COMP_NAMES[c]}" must be a finite number, got: ${String(cv)}`);
+    }
+    pack(view, f.offset + c * 4, cv);
+  }
+}
+
 /** 把标量值按布局写进 ArrayBuffer;缺失字段报错,多余字段忽略前给出字段清单便于排错 */
-export function packUniform(layout: UniformLayout, values: Readonly<Record<string, number>>): ArrayBuffer {
+export type UniformValue = number | Readonly<{ x: number; y: number; z?: number; w?: number }>;
+
+export function packUniform(layout: UniformLayout, values: Readonly<Record<string, UniformValue>>): ArrayBuffer {
   const buf = new ArrayBuffer(layout.size);
   const view = new DataView(buf);
   for (const f of layout.fields) {
-    const pack = PACKERS[f.kind];
-    if (!pack) {
-      throw new UsageError(ERR.UNIFORM_UNSUPPORTED, `Uniform field "${f.name}" has unsupported type "${f.kind}". Only scalars are currently supported.`);
-    }
     const v = values[f.name];
     if (v === undefined) throw new UsageError(ERR.UNIFORM_FIELD, `Missing uniform value for "${f.name}"`);
-    if (typeof v !== 'number' || !Number.isFinite(v)) {
-      throw new UsageError(ERR.UNIFORM_FIELD, `Uniform value for "${f.name}" must be a finite number, got: ${String(v)}`);
-    }
-    pack(view, f.offset, v);
+    packField(view, f, v);
   }
   return buf;
 }
 
 /** packUniform 的零分配变体:写入调用方提供的缓冲(每帧路径用,避免 new ArrayBuffer) */
-export function packUniformInto(target: ArrayBuffer, layout: UniformLayout, values: Readonly<Record<string, number>>): void {
+export function packUniformInto(
+  target: ArrayBuffer,
+  layout: UniformLayout,
+  values: Readonly<Record<string, number | Readonly<{ x: number; y: number; z?: number; w?: number }>>>,
+): void {
   const view = new DataView(target);
   for (const f of layout.fields) {
-    const pack = PACKERS[f.kind];
-    if (!pack) {
-      throw new UsageError(ERR.UNIFORM_UNSUPPORTED, `Uniform field "${f.name}" has unsupported type "${f.kind}". Only scalars are currently supported.`);
-    }
     const v = values[f.name];
     if (v === undefined) throw new UsageError(ERR.UNIFORM_FIELD, `Missing uniform value for "${f.name}"`);
-    if (typeof v !== 'number' || !Number.isFinite(v)) {
-      throw new UsageError(ERR.UNIFORM_FIELD, `Uniform value for "${f.name}" must be a finite number, got: ${String(v)}`);
-    }
-    pack(view, f.offset, v);
+    packField(view, f, v);
   }
 }

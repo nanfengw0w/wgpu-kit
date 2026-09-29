@@ -16,9 +16,29 @@ const report = (name: string, pass: boolean, detail = '') => {
 const near = (a: number, b: number, eps = 1e-4) => Math.abs(a - b) <= eps;
 
 async function main() {
+  // T0 adopt:接入调用方自有设备(v2.0 资源契约)——必须先于任何 get();
+  // 此后全部探针都跑在接入设备上,等于整页冒烟变成 adopt 路径的常测覆盖
+  let adoptInfo = 'skipped: no adapter';
+  {
+    const adapter = (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }))
+      ?? (await navigator.gpu.requestAdapter({ forceFallbackAdapter: true }));
+    if (adapter) {
+      const device = await adapter.requestDevice({ label: 'smoke-adopted' });
+      adoptInfo = GpuContext.adopt(device).adapterInfo;
+      const k = elementKernel({ name: 'adopt-probe', state: { x: 'f32' }, code: 'fn userFn(idx: u32) { x[idx] = 7.0; }' });
+      const buf = await Buffer.create('f32', 8);
+      await k.run({ x: buf });
+      const got = (await buf.read()) as Float32Array;
+      report('adopt-device', got[3] === 7, `设备 ${adoptInfo} · x[3]=${got[3]}(期 7;全库运行于接入设备)`);
+      buf.destroy();
+    } else {
+      report('adopt-device', false, 'requestAdapter null(环境无适配器)');
+    }
+  }
+
   const ctx = await GpuContext.get();
   (window as any).__adapter = ctx.adapterInfo;
-  report('context-adapter', true, ctx.adapterInfo);
+  report('context-adapter', true, `${ctx.adapterInfo} · adopt=${adoptInfo}`);
 
   // T1b 纹理读写回裸诊断(原 packages 页迁移):writeTexture → copyTextureToBuffer → mapAsync
   {
@@ -260,6 +280,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     report('comment-field-ignored', got[5] === 6, `out[5]=${got[5]}(期 6;注释提及未用字段不得使 bind group 失配)`);
     out.destroy();
     inp.destroy();
+  }
+
+  // T12 向量 uniform:setParams 式传值 {x,y},kernel 以 vec2f 形参消费
+  {
+    const buf = await Buffer.create('vec2f', 4);
+    const k = elementKernel({
+      name: 'vec-uniform',
+      state: { out: 'vec2f' },
+      uniforms: { origin: 'vec2f' },
+      code: 'fn userFn(idx: u32, origin: vec2f) { out[idx] = origin + vec2f(f32(idx), -f32(idx)); }',
+    });
+    await k.run({ out: buf }, { origin: { x: 10, y: 20 } });
+    const rows = (await buf.read()) as Float32Array;
+    const ok = rows[4] === 12 && rows[5] === 18;
+    report('vector-uniform', ok, `out[2]=[${rows[4]},${rows[5]}](期 [12,18];uniform 向量化)`);
+    buf.destroy();
   }
 
   await ctx.sync();
