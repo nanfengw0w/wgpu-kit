@@ -20,11 +20,11 @@ describe('pack 平台契约', () => {
     expect(() => registerPack(p)).toThrow(UsageError);
   });
 
-  it('内置包已注册(particles/fields)', async () => {
+  it('内置包已注册(particles;fields/image 已于 v2.0 删除)', async () => {
     // 根入口 import 时注册;这里直接验证注册表可见
     const { listPacks } = await import('../src/index.ts');
     const names = listPacks().map((x) => x.name);
     expect(names).toContain('particles');
-    expect(names).toContain('fields');
+    expect(names).not.toContain('fields');
   });
 });

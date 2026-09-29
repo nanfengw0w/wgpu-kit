@@ -37,7 +37,11 @@ export interface NeighborGrid {
   cellFill: Buffer;
   /** 按格子序排列的实体下标(order[slot] = 实体 i) */
   order: Buffer;
-  /** 建格:counts → scan → scatter(三 pass,一 encoder,内部提交) */
+  /** [v2.0] 幂等准备(管线在 create 时已同步编译;为编码合同统一形态保留) */
+  prepare(): Promise<void>;
+  /** [v2.0] 同步编码:counts → scan → scatter 三个 pass 写入调用方 encoder(不提交) */
+  encode(encoder: GPUCommandEncoder, pos: Buffer): void;
+  /** 建格:便捷路径 = 内部 encoder + 提交 */
   update(pos: Buffer): void;
   destroy(): void;
 }
@@ -114,6 +118,28 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
     ],
   });
 
+  const encodeImpl = (encoder: GPUCommandEncoder, pos: Buffer): void => {
+    writeUniform();
+    // 独立 pass:实测同 pass 连续 dispatch 存在旧数据可见性问题(Dawn/Windows)
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pCounts);
+    pass.setBindGroup(0, bgCounts(pos));
+    pass.dispatchWorkgroups(Math.ceil(count / WG));
+    pass.end();
+
+    const pass2 = encoder.beginComputePass();
+    pass2.setPipeline(pScan);
+    pass2.setBindGroup(0, bgScan);
+    pass2.dispatchWorkgroups(1);
+    pass2.end();
+
+    const pass3 = encoder.beginComputePass();
+    pass3.setPipeline(pScatter);
+    pass3.setBindGroup(0, bgScatter(pos));
+    pass3.dispatchWorkgroups(Math.ceil(count / WG));
+    pass3.end();
+  };
+
   return {
     gridSize,
     cells,
@@ -121,28 +147,15 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
     cellFill,
     order,
 
-    update(pos: Buffer): void {
-      writeUniform();
+    async prepare(): Promise<void> {
+      /* 管线在 createNeighborGrid 内同步编译,无需异步准备;保留以统一编码合同 */
+    },
+
+    encode: (encoder, pos) => encodeImpl(encoder, pos),
+
+    update: (pos) => {
       const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
-      // 独立 pass:实测同 pass 连续 dispatch 存在旧数据可见性问题(Dawn/Windows)
-      pass.setPipeline(pCounts);
-      pass.setBindGroup(0, bgCounts(pos));
-      pass.dispatchWorkgroups(Math.ceil(count / WG));
-      pass.end();
-
-      const pass2 = enc.beginComputePass();
-      pass2.setPipeline(pScan);
-      pass2.setBindGroup(0, bgScan);
-      pass2.dispatchWorkgroups(1);
-      pass2.end();
-
-      const pass3 = enc.beginComputePass();
-      pass3.setPipeline(pScatter);
-      pass3.setBindGroup(0, bgScatter(pos));
-      pass3.dispatchWorkgroups(Math.ceil(count / WG));
-      pass3.end();
-
+      encodeImpl(enc, pos);
       device.queue.submit([enc.finish()]);
     },
 
