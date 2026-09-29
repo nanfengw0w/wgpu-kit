@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>core 原语层验证(scan/reduce)</title>
+  <style>html, body { margin: 0; background: #0b0d12; color: #9aa; font: 13px/1.6 monospace; padding: 12px; }</style>
+</head>
+<body>
+  <script>
+    window.__boot = 'pending';
+    window.addEventListener('error', (e) => { window.__boot = 'error: ' + (e.message || e.type); });
+    window.addEventListener('unhandledrejection', (e) => { window.__boot = 'rejection: ' + String(e.reason).slice(0, 200); });
+  </script>
+  <h3>core 原语层验证(scan 双档 / reduce)</h3>
+  <pre id="out">运行中……</pre>
+  <script type="module" src="./primitives.bundle.js"></script>
+</body>
+</html>
