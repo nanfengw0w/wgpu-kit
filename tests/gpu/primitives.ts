@@ -138,6 +138,52 @@ async function main() {
     srcBuf.destroy();
   }
 
+  // —— encode-once-per-submit 合同(复审 P1-1):提交前重复 encode 必须拒绝 ——
+  {
+    const n = 8;
+    const src = makeSrc(n, 'ones');
+    const srcBuf = await Buffer.create('u32', n);
+    const dstBuf = await Buffer.create('u32', n);
+    srcBuf.write(src);
+    // scan:第一次 encode 后、提交前再 encode → UsageError;endSubmit 后恢复
+    await scan.prepare();
+    const { GpuContext } = await import('../../src/core/context.ts');
+    const encoder = (await GpuContext.get()).device.createCommandEncoder();
+    scan.encode(encoder, srcBuf.gpuBuffer, dstBuf.gpuBuffer, n, true);
+    let threw = false;
+    try {
+      scan.encode(encoder, srcBuf.gpuBuffer, dstBuf.gpuBuffer, n, true);
+    } catch (e) {
+      threw = (e as Error).name === 'UsageError';
+    }
+    (await GpuContext.get()).device.queue.submit([encoder.finish()]);
+    scan.endSubmit();
+    await scan.run(srcBuf, dstBuf, n, true);
+    const after = (await dstBuf.read()) as Uint32Array;
+    report('scan encode-once guard', threw && after[3] === 3, `重复拒绝=${threw} endSubmit 后恢复 dst[3]=${after[3]}(期 3)`);
+    // reduce:同型用例
+    const sumBuf = await Buffer.create('u32', 1);
+    const { GpuContext: GC2 } = await import('../../src/core/context.ts');
+    const r = createReduce();
+    await r.prepare();
+    const enc2 = (await GC2.get()).device.createCommandEncoder();
+    r.sumInto(enc2, srcBuf.gpuBuffer, n, sumBuf.gpuBuffer);
+    let threw2 = false;
+    try {
+      r.sumInto(enc2, srcBuf.gpuBuffer, n, sumBuf.gpuBuffer);
+    } catch (e) {
+      threw2 = (e as Error).name === 'UsageError';
+    }
+    (await GC2.get()).device.queue.submit([enc2.finish()]);
+    r.endSubmit();
+    const total = await r.sum(srcBuf, n);
+    report('reduce encode-once guard', threw2 && total === n, `重复拒绝=${threw2} 恢复后 Σ=${total}(期 ${n})`);
+    srcBuf.destroy();
+    dstBuf.destroy();
+    sumBuf.destroy();
+    r.destroy();
+  }
+
   scan.destroy();
   reduce.destroy();
 }

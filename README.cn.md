@@ -102,7 +102,7 @@ const orbit = definePack({
   },
 });
 registerPack(orbit);
-listPacks(); // [{ name: 'particles', … }, { name: 'fields', … }, { name: 'orbit', … }]
+listPacks(); // [{ name: 'particles', … }, { name: 'orbit', … }]
 ```
 
 `probe()` 是平台的关键约定:第三方包在验证 harness 里享受与内置包完全相同

@@ -144,7 +144,13 @@ var GpuContext = class _GpuContext {
       const supported = adapter.limits[key];
       if (typeof supported === "number") requiredLimits[key] = supported;
     }
-    const device = await adapter.requestDevice({ label: "wgpu-kit", requiredLimits });
+    const device = await adapter.requestDevice({
+      label: "wgpu-kit",
+      requiredLimits,
+      // timestamp-query 是可选能力,默认不启用(复审 P1-3):adapter 支持就请求,
+      // 否则 observe.timeGpu 在默认路径永远抛"特性缺失"——即使硬件完全支持
+      requiredFeatures: adapter.features.has("timestamp-query") ? ["timestamp-query"] : []
+    });
     return new _GpuContext(device, label, adapter);
   }
   /** device lost 时 reject;调用方可 await 做清理/提示 */
@@ -1052,6 +1058,8 @@ function createScan() {
   let paramsB = null;
   let blockSums = null;
   let blockSumsCap = 0;
+  let guardArmed = true;
+  let guardOpen = false;
   const writeParams = (buf, count, exclusive, blockCount) => {
     const b = new ArrayBuffer(USIZE);
     const v = new DataView(b);
@@ -1086,6 +1094,9 @@ function createScan() {
       if (!ctx || !pipelines || !paramsA || !paramsB) {
         throw new UsageError(ERR.USAGE, "scan.encode called before prepare() \u2014 await scan.prepare() first");
       }
+      if (guardArmed && guardOpen) {
+        throw new UsageError(ERR.USAGE, "scan.encode called twice before submit \u2014 shared params would be overwritten (encode-once-per-submit contract). Call endSubmit() after your submit, or use scan.run().");
+      }
       if (!Number.isInteger(count) || count < 0) {
         throw new UsageError(ERR.USAGE, `scan count must be a non-negative integer, got ${String(count)}`);
       }
@@ -1093,8 +1104,8 @@ function createScan() {
       if (count > SEGMENT * BLOCK_COUNT_CAP) {
         throw new UsageError(ERR.USAGE, `scan count ${count} exceeds supported cap ${SEGMENT * BLOCK_COUNT_CAP}`);
       }
+      if (guardArmed) guardOpen = true;
       const device = ctx.device;
-      const flag = exclusive ? 1 : 0;
       if (count <= TIER1_CAP) {
         writeParams(paramsA, count, exclusive, 0);
         const bg = device.createBindGroup({
@@ -1171,6 +1182,13 @@ function createScan() {
       const enc = ctx.device.createCommandEncoder();
       this.encode(enc, src.gpuBuffer, dst.gpuBuffer, count, exclusive);
       ctx.device.queue.submit([enc.finish()]);
+      guardOpen = false;
+    },
+    endSubmit() {
+      guardOpen = false;
+    },
+    resetEncodeGuard() {
+      guardArmed = false;
     },
     destroy() {
       blockSums?.destroy();
@@ -1567,6 +1585,7 @@ async function particles(config = {}) {
         passC.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
         passC.end();
         device.queue.submit([enc.finish()]);
+        getSharedScan().endSubmit();
       } else {
         const pass = enc.beginComputePass();
         pass.setPipeline(simPipeline);

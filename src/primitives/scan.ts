@@ -176,8 +176,15 @@ export interface Scan {
   /**
    * 同步编码:把前缀和命令写入调用方 encoder(多档时为 1~3 个独立 pass)。
    * src/dst 为 u32 storage 用法的原生 GPUBuffer(count=0 时为 no-op)。
+   * encode-once-per-submit 合同(与 elementKernel 一致):paramsA 是实例共享的,
+   * 一次提交前重复 encode 会覆盖参数快照——guard 拒绝之;自定义 submit 流程
+   * 在提交后调用 endSubmit() 重置。
    */
   encode(encoder: GPUCommandEncoder, src: GPUBuffer, dst: GPUBuffer, count: number, exclusive?: boolean): void;
+  /** [v2.0] 自定义 submit 流程完成后调用:重置 encode-once 检测 */
+  endSubmit(): void;
+  /** 高级:解除 encode-once 检测(自行承担参数覆盖语义) */
+  resetEncodeGuard(): void;
   /** 便捷路径:内部 encoder + 提交 */
   run(src: Buffer, dst: Buffer, count: number, exclusive?: boolean): Promise<void>;
   destroy(): void;
@@ -195,6 +202,10 @@ export function createScan(): Scan {
   let paramsB: GPUBuffer | null = null; // blockCount(pBases)
   let blockSums: GPUBuffer | null = null;
   let blockSumsCap = 0;
+  // encode-once-per-submit 合同(外部审查复审 P1-1):paramsA 共享,提交前
+  // 重复 encode 会覆盖参数;guard 在校验后打开、run/endSubmit 关闭
+  let guardArmed = true;
+  let guardOpen = false;
 
   const writeParams = (buf: GPUBuffer, count: number, exclusive: boolean, blockCount: number) => {
     const b = new ArrayBuffer(USIZE);
@@ -233,15 +244,19 @@ export function createScan(): Scan {
       if (!ctx || !pipelines || !paramsA || !paramsB) {
         throw new UsageError(ERR.USAGE, 'scan.encode called before prepare() — await scan.prepare() first');
       }
+      // encode-once guard 在参数校验**之后**打开(P2-1 教训:校验抛错不锁闸)
+      if (guardArmed && guardOpen) {
+        throw new UsageError(ERR.USAGE, 'scan.encode called twice before submit — shared params would be overwritten (encode-once-per-submit contract). Call endSubmit() after your submit, or use scan.run().');
+      }
       if (!Number.isInteger(count) || count < 0) {
         throw new UsageError(ERR.USAGE, `scan count must be a non-negative integer, got ${String(count)}`);
       }
-      if (count === 0) return; // 空输入 no-op
+      if (count === 0) return; // 空输入 no-op(不打开 guard)
       if (count > SEGMENT * BLOCK_COUNT_CAP) {
         throw new UsageError(ERR.USAGE, `scan count ${count} exceeds supported cap ${SEGMENT * BLOCK_COUNT_CAP}`);
       }
+      if (guardArmed) guardOpen = true;
       const device = ctx.device;
-      const flag = exclusive ? 1 : 0;
 
       if (count <= TIER1_CAP) {
         // —— 单档:dispatch(1) ——
@@ -328,6 +343,15 @@ export function createScan(): Scan {
       const enc = ctx!.device.createCommandEncoder();
       this.encode(enc, src.gpuBuffer, dst.gpuBuffer, count, exclusive);
       ctx!.device.queue.submit([enc.finish()]);
+      guardOpen = false;
+    },
+
+    endSubmit(): void {
+      guardOpen = false;
+    },
+
+    resetEncodeGuard(): void {
+      guardArmed = false;
     },
 
     destroy(): void {

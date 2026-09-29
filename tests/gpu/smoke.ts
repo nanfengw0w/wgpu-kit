@@ -328,6 +328,48 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     out.destroy();
   }
 
+  // T11d 校验失败不锁 guard(复审 P2-1):encode 因缺资源抛错后,
+  // 同一 encoder 上用正确资源重试必须可行
+  {
+    const out = await Buffer.create('f32', 8);
+    const a = await Buffer.create('f32', 8);
+    a.write(new Float32Array(8).fill(3));
+    const k = elementKernel({ name: 'guard-retry', state: { out: 'f32' }, inputs: { a: 'f32' }, code: 'fn userFn(idx: u32) { out[idx] = a[idx] + 1.0; }' });
+    await k.prepare();
+    const enc = ctx.device.createCommandEncoder();
+    let firstThrew = false;
+    try {
+      k.encode(enc, { a }); // 缺 out → RESOURCE_MISSING
+    } catch (e) {
+      firstThrew = e instanceof UsageError;
+    }
+    k.encode(enc, { out, a }); // 重试:guard 不得已打开
+    ctx.device.queue.submit([enc.finish()]);
+    k.endSubmit();
+    const got = (await out.read()) as Float32Array;
+    report('encode-fail-does-not-lock-guard', firstThrew && got[0] === 4, `首次抛错=${firstThrew} 重试生效 out[0]=${got[0]}(期 4)`);
+    out.destroy();
+    a.destroy();
+  }
+
+  // T11e 结构成员同名不误判(复审 P1-2):inputs 声明 ghost,
+  // userFn 只访问 item.ghost(struct 成员)——ghost 全局资源不得进布局
+  {
+    const n = 16;
+    const out = await Buffer.create('f32', n);
+    const ghost = await Buffer.create('f32', n);
+    const k = elementKernel({
+      name: 'struct-member-shadow',
+      state: { out: 'f32', ghost: 'f32' },
+      code: 'struct Item { ghost: f32, }\nfn userFn(idx: u32) {\n  let item = Item(2.0);\n  out[idx] = item.ghost;\n  ghost[idx] = 0.0;\n}',
+    });
+    await k.run({ out, ghost });
+    const got = (await out.read()) as Float32Array;
+    report('struct-member-not-a-use', got[3] === 2, `out[3]=${got[3]}(期 2;成员访问 item.ghost 不算全局使用)`);
+    out.destroy();
+    ghost.destroy();
+  }
+
   // T12 向量 uniform:setParams 式传值 {x,y},kernel 以 vec2f 形参消费
   {
     const buf = await Buffer.create('vec2f', 4);
