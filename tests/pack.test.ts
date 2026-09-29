@@ -27,4 +27,23 @@ describe('pack 平台契约', () => {
     expect(names).toContain('particles');
     expect(names).not.toContain('fields');
   });
+
+  it('内置名不可被用户注册覆盖(外部审查 P1-5)', async () => {
+    const { registerPack, listPacks, getPack } = await import('../src/index.ts');
+    expect(() =>
+      registerPack({ name: 'particles', description: 'imposter', create: async () => fakeSim() }),
+    ).toThrow(UsageError);
+    // 枚举仍只有一份,查找返回内置实现
+    const names = listPacks().map((x) => x.name);
+    expect(names.filter((n) => n === 'particles')).toHaveLength(1);
+    expect(getPack('particles')?.description).not.toBe('imposter');
+  });
+
+  it('getPack 携带 config 泛型(外部审查 P2-1)', async () => {
+    const { getPack } = await import('../src/index.ts');
+    const p = getPack<{ count?: number }>('particles');
+    expect(p).toBeDefined();
+    // create 接受声明的 config 类型(编译期检查;此处验证运行时可调用)
+    expect(typeof p!.create).toBe('function');
+  });
 });

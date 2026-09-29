@@ -2,21 +2,23 @@ import { GpuContext } from '../../core/context.ts';
 import { Buffer } from '../../core/buffer.ts';
 import { CompileError } from '../../core/errors.ts';
 import { createShaderModuleChecked } from '../../core/shader.ts';
+import { createScan, type Scan } from '../../primitives/scan.ts';
 
 /**
  * NeighborGrid —— 通用空间邻域加速(计数排序 spatial hash)。
  *
  * 从粒子包的 grid 实现中提取的通用能力:任意"每帧需要查邻居"的模拟
- * (流体 SPH / boids / 碰撞 / 聚类)都能用,实测 8.5× 于暴力解、近似 O(N)。
+ * (流体 SPH / 碰撞 / 聚类)都能用,实测 8.5× 于暴力解、近似 O(N)。
  *
  * 用法:
- *   const grid = await NeighborGrid.create({ count, worldHalf, cellSize });
+ *   const grid = await createNeighborGrid({ count, worldHalf, cellSize });
  *   // 每帧:先 update(按位置建格),再让你的力 kernel 读 cellStart/cellFill/order
  *   grid.update(posBuffer);
- *   // 你的 kernel 通过 order[k] 解引用邻居(或直接用 grid.sortedPos 若启用了 payload)
  *
- * 设计说明:三个 build pass 在同一个 encoder 内提交(实测 pass 边界保证可见性);
- * 粒子包保留其含 payload 排序的专用高性能变体,本包是无 payload 的通用版。
+ * [v2.0] scan 本体走 core 原语(双档位一致验证);本包只保留 counts/scatter
+ * 两个专用 kernel + 一个 post(fill 游标归位 + counts 清零)。
+ * 外部审查 P1-4 修复:旧 main_scan 的绑定声明错位(bgScan 绑 1/2/3 而 shader
+ * 声明 2/3/4,公开路径建格全错)且 strided 前缀越界——原语化后整类问题消失。
  */
 export interface NeighborGridConfig {
   /** 粒子/实体数量 */
@@ -33,13 +35,13 @@ export interface NeighborGrid {
   readonly cells: number;
   /** 格内首个有序槽位 */
   cellStart: Buffer;
-  /** 格内结束槽位(原子填充) */
+  /** 格内结束槽位(scatter 填充后 = start + count) */
   cellFill: Buffer;
   /** 按格子序排列的实体下标(order[slot] = 实体 i) */
   order: Buffer;
-  /** [v2.0] 幂等准备(管线在 create 时已同步编译;为编码合同统一形态保留) */
+  /** [v2.0] 幂等准备(含 core scan 原语);encode 前必须完成 */
   prepare(): Promise<void>;
-  /** [v2.0] 同步编码:counts → scan → scatter 三个 pass 写入调用方 encoder(不提交) */
+  /** [v2.0] 同步编码:counts → scan(原语) → post → scatter 写入调用方 encoder(不提交) */
   encode(encoder: GPUCommandEncoder, pos: Buffer): void;
   /** 建格:便捷路径 = 内部 encoder + 提交 */
   update(pos: Buffer): void;
@@ -47,7 +49,6 @@ export interface NeighborGrid {
 }
 
 const WG = 64;
-const SCAN = 256;
 const USIZE = 32;
 
 export async function createNeighborGrid(config: NeighborGridConfig): Promise<NeighborGrid> {
@@ -83,12 +84,16 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
   const order = await Buffer.create('u32', count);
   cellCount.write(new Uint32Array(cells));
 
+  // core scan 原语(双档位一致验证,外部审查 P1-4 的根治)
+  const scan = createScan();
+  await scan.prepare();
+
   const { module, messages } = await createShaderModuleChecked(device, gridWgsl(), 'ngrid');
   const errors = messages.filter((m) => m.type === 'error');
   if (errors.length > 0) throw new CompileError('ngrid', errors.map((m) => ({ line: m.lineNum, msg: m.message })), 0);
 
   const pCounts = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_counts' } });
-  const pScan = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_scan' } });
+  const pPost = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_post' } });
   const pScatter = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main_scatter' } });
 
   const bgCounts = (pos: Buffer) => device.createBindGroup({
@@ -99,13 +104,14 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
       { binding: 2, resource: { buffer: cellCount.gpuBuffer } },
     ],
   });
-  const bgScan = device.createBindGroup({
-    layout: pScan.getBindGroupLayout(0),
+  // post:fill 游标归位到 start + counts 清零(给下一帧)
+  const bgPost = device.createBindGroup({
+    layout: pPost.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: uniform } },
-      { binding: 1, resource: { buffer: cellCount.gpuBuffer } },
-      { binding: 2, resource: { buffer: cellStart.gpuBuffer } },
-      { binding: 3, resource: { buffer: cellFill.gpuBuffer } },
+      { binding: 2, resource: { buffer: cellCount.gpuBuffer } },
+      { binding: 3, resource: { buffer: cellStart.gpuBuffer } },
+      { binding: 4, resource: { buffer: cellFill.gpuBuffer } },
     ],
   });
   const bgScatter = (pos: Buffer) => device.createBindGroup({
@@ -113,31 +119,35 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
     entries: [
       { binding: 0, resource: { buffer: uniform } },
       { binding: 1, resource: { buffer: pos.gpuBuffer } },
-      { binding: 2, resource: { buffer: cellFill.gpuBuffer } },
-      { binding: 3, resource: { buffer: order.gpuBuffer } },
+      { binding: 4, resource: { buffer: cellFill.gpuBuffer } },
+      { binding: 5, resource: { buffer: order.gpuBuffer } },
     ],
   });
 
+
   const encodeImpl = (encoder: GPUCommandEncoder, pos: Buffer): void => {
     writeUniform();
-    // 独立 pass:实测同 pass 连续 dispatch 存在旧数据可见性问题(Dawn/Windows)
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(pCounts);
-    pass.setBindGroup(0, bgCounts(pos));
-    pass.dispatchWorkgroups(Math.ceil(count / WG));
-    pass.end();
+    // 独立 pass:同 pass 连续 dispatch 的存储可见性规范不保证(Dawn/Windows 实测)
+    const pass1 = encoder.beginComputePass({ label: 'ngrid-counts' });
+    pass1.setPipeline(pCounts);
+    pass1.setBindGroup(0, bgCounts(pos));
+    pass1.dispatchWorkgroups(Math.ceil(count / WG));
+    pass1.end();
 
-    const pass2 = encoder.beginComputePass();
-    pass2.setPipeline(pScan);
-    pass2.setBindGroup(0, bgScan);
-    pass2.dispatchWorkgroups(1);
-    pass2.end();
+    // scan 原语:自管 pass 写进本 encoder(counts → cellStart 排他前缀)
+    scan.encode(encoder, cellCount.gpuBuffer, cellStart.gpuBuffer, cells, true);
 
-    const pass3 = encoder.beginComputePass();
-    pass3.setPipeline(pScatter);
-    pass3.setBindGroup(0, bgScatter(pos));
-    pass3.dispatchWorkgroups(Math.ceil(count / WG));
+    const pass3 = encoder.beginComputePass({ label: 'ngrid-post' });
+    pass3.setPipeline(pPost);
+    pass3.setBindGroup(0, bgPost);
+    pass3.dispatchWorkgroups(Math.ceil(cells / WG));
     pass3.end();
+
+    const pass4 = encoder.beginComputePass({ label: 'ngrid-scatter' });
+    pass4.setPipeline(pScatter);
+    pass4.setBindGroup(0, bgScatter(pos));
+    pass4.dispatchWorkgroups(Math.ceil(count / WG));
+    pass4.end();
   };
 
   return {
@@ -148,7 +158,7 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
     order,
 
     async prepare(): Promise<void> {
-      /* 管线在 createNeighborGrid 内同步编译,无需异步准备;保留以统一编码合同 */
+      await scan.prepare(); // 幂等;其余管线在 create 时已同步编译
     },
 
     encode: (encoder, pos) => encodeImpl(encoder, pos),
@@ -161,12 +171,15 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
 
     destroy(): void {
       cellCount.destroy(); cellStart.destroy(); cellFill.destroy(); order.destroy(); uniform.destroy();
+      scan.destroy();
     },
   };
 }
 
 function gridWgsl(): string {
   return /* wgsl */ `
+// 全模块统一一套 binding 声明:layout:'auto' 为每个入口点取其静态使用的子集,
+// 同一 binding 号不得被两个入口点重复声明(WGSL 校验:同一模块内绑定唯一)
 struct Params {
   count: u32, _pad0: u32,
   worldHalf: f32, gridSize: u32, cells: u32,
@@ -175,7 +188,7 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> posIn: array<vec2f>;
 @group(0) @binding(2) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read_write> cellStart: array<u32>;
+@group(0) @binding(3) var<storage, read> cellStartIn: array<u32>;
 @group(0) @binding(4) var<storage, read_write> cellFill: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> order: array<u32>;
 
@@ -194,47 +207,14 @@ fn main_counts(@builtin(global_invocation_id) gid: vec3u) {
   atomicAdd(&cellCount[cellOf(posIn[i])], 1u);
 }
 
-var<workgroup> partial: array<u32, ${SCAN}>;
-@compute @workgroup_size(${SCAN})
-fn main_scan(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u) {
-  let tid = lid.x;
-  let cells = params.cells;
-  let wg = ${SCAN}u;
-  let chunks = (cells + wg - 1u) / wg;
-
-  // ① 本 workgroup 负责的 chunk 局部和
-  var local = 0u;
-  for (var c = 0u; c < chunks; c++) {
-    let idx = c * wg + tid;
-    if (idx < cells) { local = local + atomicLoad(&cellCount[idx]); }
-  }
-  partial[tid] = local;
-  workgroupBarrier();
-
-  // ② 局部和的含前缀扫描(Hillis-Steele)
-  var offset = 1u;
-  loop {
-    if (offset >= wg) { break; }
-    var v = 0u;
-    if (tid >= offset) { v = partial[tid - offset]; }
-    workgroupBarrier();
-    if (tid >= offset) { partial[tid] = partial[tid] + v; }
-    workgroupBarrier();
-    offset = offset << 1u;
-  }
-
-  // ③ chunk 基址 → start/fill,顺带把 count 归零给下一帧
-  var run = 0u;
-  if (tid > 0u) { run = partial[tid - 1u]; }
-  for (var c = 0u; c < chunks; c++) {
-    let idx = c * wg + tid;
-    if (idx < cells) {
-      cellStart[idx] = run;
-      atomicStore(&cellFill[idx], run);
-      run = run + atomicLoad(&cellCount[idx]);
-      atomicStore(&cellCount[idx], 0u);
-    }
-  }
+// scan 后置:fill 游标归位到段起点(scatter 原子递增至 start+count)+ counts 清零
+// (scan 本体在 core 原语层;本 kernel 只消费其排他输出 cellStartIn)
+@compute @workgroup_size(${WG})
+fn main_post(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= params.cells) { return; }
+  atomicStore(&cellFill[i], cellStartIn[i]);
+  atomicStore(&cellCount[i], 0u);
 }
 
 @compute @workgroup_size(${WG})

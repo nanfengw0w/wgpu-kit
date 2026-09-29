@@ -33,7 +33,8 @@ jobs:
         run: >-
           node scripts/verify.mjs --swiftshader
           tests/gpu/smoke.html
-          --timeout=120000
+          tests/gpu/primitives.html
+          --timeout=180000
       - name: Grid physics probes (SwiftShader WebGPU, lite)
         run: >-
           node scripts/verify.mjs --swiftshader
@@ -48,5 +49,6 @@ jobs:
         run: >-
           node scripts/verify.mjs --swiftshader
           tests/gpu/smoke.html
+          tests/gpu/primitives.html
           "tests/gpu/grid-debug.html?lite=1"
           --timeout=1200000

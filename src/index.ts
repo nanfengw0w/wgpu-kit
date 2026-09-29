@@ -21,7 +21,10 @@ export { WgpuKitError, WebGPUUnavailableError, CompileError, UsageError } from '
 // v1.x 的写法与 package.json "sideEffects: false" 冲突:打包器可合法 shake
 // 掉注册调用,listPacks() 随之返回空。现在 listPacks/getPack 是纯函数,
 // 内置包是数据,tree-shake 无论怎么摇语义都不变。
+// reserveBuiltInName 是纯数据登记(集合 add),使 registerPack('particles')
+// 在任何模块加载顺序下都报错——外部审查 P1-5 的根治。
 import { particles as _particles, type ParticlesConfig } from './packs/particles/index.ts';
+import { reserveBuiltInName } from './core/pack.ts';
 
 const BUILT_IN_PACKS: ReadonlyArray<WgpuKitPack<ParticlesConfig | undefined, PackSim>> = [
   {
@@ -30,6 +33,7 @@ const BUILT_IN_PACKS: ReadonlyArray<WgpuKitPack<ParticlesConfig | undefined, Pac
     create: (config) => _particles(config ?? {}),
   },
 ];
+for (const p of BUILT_IN_PACKS) reserveBuiltInName(p.name);
 
 /** 内置包 + 用户注册包,合并枚举 */
 export function listPacks(): Array<{ name: string; description: string }> {
@@ -39,9 +43,9 @@ export function listPacks(): Array<{ name: string; description: string }> {
   ];
 }
 
-/** 按名取包:内置优先,未命中回落用户注册表 */
-export function getPack(name: string): WgpuKitPack<never, PackSim> | undefined {
+/** 按名取包:内置优先,未命中回落用户注册表(config 类型由调用方收敛,见 P2-1) */
+export function getPack<TConfig = unknown>(name: string): WgpuKitPack<TConfig, PackSim> | undefined {
   const builtin = BUILT_IN_PACKS.find((p) => p.name === name);
-  if (builtin) return builtin as unknown as WgpuKitPack<never, PackSim>;
-  return getUserPack(name) as WgpuKitPack<never, PackSim> | undefined;
+  if (builtin) return builtin as unknown as WgpuKitPack<TConfig, PackSim>;
+  return getUserPack(name) as WgpuKitPack<TConfig, PackSim> | undefined;
 }

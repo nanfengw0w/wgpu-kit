@@ -23,6 +23,11 @@
 
 ### 修复(Fixed)
 
+- **[外部审查] NeighborGrid 公开路径建格错误**:旧 main_scan 的 bind group 绑定(1/2/3)与 shader 声明(2/3/4)错位,公开 API 建出的格是错的;scan 原语化根治,新增专项探针(fill 语义/全格覆盖)。
+- **[外部审查] 同一实例提交前重复 encode 会覆盖共享 uniform**:实现 encode-once-per-submit 运行时检测(重复 encode 抛 UsageError),自定义 submit 流程用 endSubmit() 重置,resetEncodeGuard() 可解除;语义写入 API 文档。
+- **[外部审查] 静态绑定提取误纳死代码**:定义了但 main 不可达的 helper 中出现的字段名被当作"已使用"→ bind group 多给 binding → 校验失败。使用分析升级为从 userFn 出发的调用可达性闭包(WGSL 无高阶函数,调用图静态可判定)。
+- **[外部审查] registerPack 不拒内置名**:注册 'particles' 后枚举双包而 getPack 静默返回内置。内置名登记为保留名,registerPack 报错。
+- **[外部审查] timeGpu 时间戳未夹住被测计算**(v1.x 即存在):时间戳与 fn 在同一 encoder 一次提交,fn 提交先行入队,双时间戳背靠背测得 Δ≈0。改三段提交(ts0 → fn → ts1+resolve)。
 - **渲染双缓冲相位**:`useAB ? pp.other : pp.current` 双翻转混用,奇数帧渲染上一帧状态(序列 1,1,3,3…)。恒渲染 swap 前的 `pp.other`。
 - **wgslStruct 生成非法 WGSL**:成员属性后置(`home: @size(16) vec3f`)不合语法,改属性前置;生成的 struct 以 storage+uniform 双语义过真实 WGSL 编译器(探针)。
 - **setParams({dt}) 死参数**:tick 读 `cfg.dt` 而 setParams 写 `phys.dt`,快照变了行为不变。dt 单一事实来源改为 `phys`。
@@ -40,8 +45,8 @@
 
 ### 校验(Verification)
 
-- 全量探针:smoke 16/16 · primitives 27/27 · grid-debug 19/19 · bench 33/33 · vitest 27/27 · tsc 零错误。
-- CI:verify + gpu-probes(SwiftShader)双 job 全绿。
+- 全量探针(本地真机):smoke 20/20 · primitives 27/27 · ngrid 6/6(新) · grid-debug 19/19 · bench 33/33 · vitest 29/29 · tsc 零错误。
+- CI 状态(2.0.0 发布前):**尚未运行**——重构期间禁推远程,gpu-probes(SwiftShader)首跑在合并推送后;CI 结果是发布门的一部分。
 
 ## 1.1.3
 

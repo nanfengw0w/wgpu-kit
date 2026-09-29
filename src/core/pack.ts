@@ -44,8 +44,21 @@ export function definePack<TConfig, TSim extends PackSim>(pack: WgpuKitPack<TCon
 
 const REGISTRY = new Map<string, WgpuKitPack<unknown, PackSim>>();
 
-/** 注册进全局注册表(同名重复注册报错,防止第三方覆盖内置包) */
+/**
+ * 内置包名表(外部审查 P1-5):registerPack 拒绝这些名字——此前用户注册
+ * 'particles' 会与静态合成项并存,枚举出现两个同名包而 getPack 静默返回内置。
+ * 由根入口在模块加载时登记(纯数据赋值,无副作用)。
+ */
+const RESERVED_NAMES = new Set<string>();
+export function reserveBuiltInName(name: string): void {
+  RESERVED_NAMES.add(name);
+}
+
+/** 注册进全局注册表;重名(含内置名)一律报错 */
 export function registerPack<TConfig, TSim extends PackSim>(pack: WgpuKitPack<TConfig, TSim>): void {
+  if (RESERVED_NAMES.has(pack.name)) {
+    throw new UsageError(ERR.USAGE, `registerPack("${pack.name}"): name is reserved by a built-in pack`);
+  }
   if (REGISTRY.has(pack.name)) {
     throw new UsageError(ERR.USAGE, `registerPack("${pack.name}"): already registered`);
   }
