@@ -1,4 +1,4 @@
-import { planUniform, packUniformInto, TYPES, type ScalarKind, type UniformLayout } from './layout.ts';
+import { planUniform, packUniformInto, TYPES, type ScalarKind, type UniformLayout, type UniformValue } from './layout.ts';
 import { GpuContext } from './context.ts';
 import { Buffer } from './buffer.ts';
 import { CompileError, ERR, UsageError } from './errors.ts';
@@ -33,11 +33,11 @@ export interface ElementKernel {
   readonly source: string;
   readonly uniformLayout: UniformLayout;
   readonly workgroupSize: number;
-  run(resources: Record<string, Buffer>, uniforms?: Record<string, number>): Promise<void>;
+  run(resources: Record<string, Buffer>, uniforms?: Record<string, UniformValue>): Promise<void>;
   /** [v2.0] 异步准备:解析上下文、编译管线、分配内部资源。幂等;encode 前必须完成 */
   prepare(): Promise<void>;
   /** [v2.0] 同步编码:dispatch 写入调用方 encoder(不提交);须先 prepare() */
-  encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms?: Record<string, number>): void;
+  encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms?: Record<string, UniformValue>): void;
   /** 热重载:替换用户函数并重建管线;编译失败时抛错且内核保持旧版 */
   replace(code: string): Promise<void>;
   destroy(): void;
@@ -239,7 +239,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
      * 多个 kernel 可写入同一 encoder 组成计算链,由调用方决定提交时机。
      * 前置条件:prepare() 已完成(否则内部管线/uniform 资源尚未就绪)。
      */
-    encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms: Record<string, number> = {}): void {
+    encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms: Record<string, UniformValue> = {}): void {
       if (!cachedCtx || !pipeline || !uniformBuffer) {
         throw new UsageError(ERR.USAGE, `kernel "${normalized.name}".encode called before prepare() — await kernel.prepare() first`);
       }
@@ -301,7 +301,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       pass.end();
     },
 
-    async run(resources: Record<string, Buffer>, uniforms: Record<string, number> = {}): Promise<void> {
+    async run(resources: Record<string, Buffer>, uniforms: Record<string, UniformValue> = {}): Promise<void> {
       await this.prepare();
       const enc = cachedCtx!.device.createCommandEncoder();
       this.encode(enc, resources, uniforms);

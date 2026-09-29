@@ -110,6 +110,22 @@ var GpuContext = class _GpuContext {
     }
     return _GpuContext.#singleton;
   }
+  /**
+   * [v2.0] 接入调用方已有的 GPUDevice(TypeGPU 互操作的关键桥,决策 D9):
+   * 对方 `tgpu.init()` 的设备经 adopt 进入 wgpu-kit,此后全库单例与
+   * Buffer.create 都走它。adapter 不可知时从 device.adapterInfo 取诊断信息。
+   * 注意:同步替换单例——须在首次 get() 之前调用,否则抛错(避免运行中换设备)。
+   */
+  static adopt(device) {
+    if (_GpuContext.#singleton) {
+      throw new WebGPUUnavailableError("GpuContext.adopt: context already created \u2014 call adopt() before any get()");
+    }
+    const info = device.adapterInfo;
+    const label = info ? [info.vendor, info.architecture, info.description].filter(Boolean).join(" / ") || "adopted device" : "adopted device";
+    const ctx = new _GpuContext(device, label, device);
+    _GpuContext.#singleton = Promise.resolve(ctx);
+    return ctx;
+  }
   static async #create() {
     if (typeof navigator === "undefined" || !("gpu" in navigator) || !navigator.gpu) {
       throw new WebGPUUnavailableError("navigator.gpu is not available");
