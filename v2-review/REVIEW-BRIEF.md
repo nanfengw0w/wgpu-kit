@@ -8,11 +8,13 @@
 
 - **仓库**：`D:\mynpm\wgpu-kit-release`（本地，无远程同步）
 - **分支**：`v2`（基于 main 的 `f2c9929`）
-- **审查范围**：`git diff main..v2`（41 个文件，+1710/-3834 行），完整 patch 已附：`v2-review/diff-main-v2.patch`
-- **提交清单**（`git log main..v2 --oneline`）：
+- **审查范围**：`git diff main..v2`（排除 `v2-review/` 审查材料后 45+ 文件，约 +2200/-4000 行），完整 patch 已附：`v2-review/diff-main-v2.patch`
+- **提交清单**（`git log main..v2 --oneline`，**以仓库实际状态为准**——本清单可能落后于最新提交）：
   ```
+  <当前 HEAD> fix(v2): second-review fixes — primitives encode-once guards, struct-member analysis, timestamp feature
+  b0bdd1e fix(v2): all 5 P1 + 4 P2 findings from external AI review
   98427ef test(v2): encode-contract chain probe + review round fixes
-  73b0a92 chore(build): core gzip budget reset to <19 kB
+  73b0a92 chore(build): core gzip budget reset to <19 kB → 后调至 <26
   093c1aa docs(v2): CHANGELOG for 2.0.0
   b310abb feat(v2)!: static pack registry + honest timeGpu timing
   15c7b2a feat(v2)!: GpuContext.adopt + vector uniforms

@@ -346,6 +346,7 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         passC.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
         passC.end();
         device.queue.submit([enc.finish()]);
+        getSharedScan().endSubmit(); // 本帧已提交:重置 scan 的 encode-once 闸(复审 P1-1)
       } else {
         const pass = enc.beginComputePass();
         pass.setPipeline(simPipeline!);

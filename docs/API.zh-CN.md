@@ -375,7 +375,7 @@ const orbit = definePack({
   }),
 });
 registerPack(orbit);
-listPacks(); // 包含 'particles'、'fields'、'orbit'
+listPacks(); // 包含 'particles'、'orbit'
 ```
 
 ---

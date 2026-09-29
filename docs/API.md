@@ -161,7 +161,7 @@ await integrate.replace(`
 | name | string | Debug label (appears in errors) | `'kernel'` |
 | state | Record\<string, ScalarKind\> | Read-**write** buffers | `{}` |
 | inputs | Record\<string, ScalarKind\> | **Read-only** buffers | `{}` |
-| uniforms | Record\<string, ScalarKind\> | Uniform scalars (f32/i32/u32 only) | `{}` |
+| uniforms | Record\<string, UniformValue\> | Uniform values — scalars or vectors (`{x, y, z?, w?}` for `vec2f/vec3f/vec4f`) | `{}` |
 | workgroupSize | number | Workgroup size, range 1..512 | `64` |
 | code | string | User WGSL function, **must be named `userFn`** | required |
 
@@ -190,15 +190,38 @@ or out-of-range workgroupSize.
 
 ##### .run ( resources, uniforms? ) : Promise\<void\>
 
-Dispatch one step.
+Dispatch one step (convenience = `prepare` + `encode` + internal submit).
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | resources | Record\<string, Buffer\> | Every state/inputs field mapped to a Buffer |
-| uniforms | Record\<string, number\> | Uniform values matching the declaration |
+| uniforms | Record\<string, UniformValue\> | Uniform values matching the declaration (scalars or `{x,y,z?,w?}` vectors) |
 
 Throws `UsageError` (missing resource / type mismatch / length mismatch) or
 `CompileError` (WGSL failure — **line numbers map back into your `code`**).
+
+##### .prepare ( ) : Promise\<void\> — v2.0
+
+Idempotent async setup: resolve context, compile pipeline, allocate internal
+resources. Must complete before `encode`.
+
+##### .encode ( encoder, resources, uniforms? ) : void — v2.0
+
+Synchronous encoding: write this dispatch into **your** command encoder without
+submitting. Compose multiple kernels into one command chain, submit when you
+decide. **encode-once-per-submit contract**: the instance shares one uniform
+snapshot buffer — encoding the same instance twice before a submit overwrites
+the first snapshot and is rejected with `UsageError`. After your submit, call
+`.endSubmit()` to re-arm (or use one kernel instance per concurrent encode;
+`.resetEncodeGuard()` opts out entirely).
+
+##### .endSubmit ( ) : void — v2.0
+
+Re-arm the encode-once guard after your own submit of a composed encoder.
+
+##### .resetEncodeGuard ( ) : void — v2.0
+
+Advanced: disable the encode-once guard (you own the overwrite semantics).
 
 ##### .replace ( code : string ) : Promise\<void\>
 
@@ -376,7 +399,7 @@ const orbit = definePack({
   }),
 });
 registerPack(orbit);
-listPacks(); // includes 'particles', 'fields', 'orbit'
+listPacks(); // includes 'particles', 'orbit'
 ```
 
 ---

@@ -41,8 +41,12 @@ export interface NeighborGrid {
   order: Buffer;
   /** [v2.0] 幂等准备(含 core scan 原语);encode 前必须完成 */
   prepare(): Promise<void>;
-  /** [v2.0] 同步编码:counts → scan(原语) → post → scatter 写入调用方 encoder(不提交) */
+  /** [v2.0] 同步编码:counts → scan(原语) → post → scatter 写入调用方 encoder(不提交)。
+   *  内部 scan 原语带 encode-once 合同:同实例一次提交前重复 encode 会被拒绝,
+   *  自定义 submit 后调用 endSubmit() 重置。 */
   encode(encoder: GPUCommandEncoder, pos: Buffer): void;
+  /** [v2.0] 自定义 submit 流程完成后调用:重置内部 scan 的 encode-once 闸 */
+  endSubmit(): void;
   /** 建格:便捷路径 = 内部 encoder + 提交 */
   update(pos: Buffer): void;
   destroy(): void;
@@ -163,10 +167,16 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
 
     encode: (encoder, pos) => encodeImpl(encoder, pos),
 
+    /** 自定义 submit 流程完成后调用:重置内部 scan 原语的 encode-once 闸 */
+    endSubmit(): void {
+      scan.endSubmit();
+    },
+
     update: (pos) => {
       const enc = device.createCommandEncoder();
       encodeImpl(enc, pos);
       device.queue.submit([enc.finish()]);
+      scan.endSubmit(); // 本帧已提交:重置 scan 闸,下一帧 update 可再次 encode
     },
 
     destroy(): void {

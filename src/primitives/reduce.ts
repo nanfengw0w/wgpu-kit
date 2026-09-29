@@ -66,8 +66,14 @@ export interface Reduce {
   /**
    * 同步编码:dst[0] = Σ src[0..count)(覆盖语义;先清零后归约,两个 pass)。
    * dst 为含 atomic<u32> 用法的原生 GPUBuffer;count=0 时仅清零。
+   * encode-once-per-submit 合同(与 scan 一致,复审 P1-1):params 共享,
+   * 一次提交前重复 sumInto 会覆盖参数——guard 拒绝;提交后调 endSubmit()。
    */
   sumInto(encoder: GPUCommandEncoder, src: GPUBuffer, count: number, dst: GPUBuffer): void;
+  /** [v2.0] 自定义 submit 流程完成后调用:重置 encode-once 检测 */
+  endSubmit(): void;
+  /** 高级:解除 encode-once 检测(自行承担参数覆盖语义) */
+  resetEncodeGuard(): void;
   /** 便捷读回:内部提交 + mapAsync,返回 Σ */
   sum(src: Buffer, count: number): Promise<number>;
   destroy(): void;
@@ -79,6 +85,9 @@ export function createReduce(): Reduce {
   let params: GPUBuffer | null = null;
   let dstBuf: GPUBuffer | null = null;
   let readBuf: GPUBuffer | null = null;
+  // encode-once-per-submit 合同(复审 P1-1)
+  let guardArmed = true;
+  let guardOpen = false;
 
   return {
     async prepare(): Promise<void> {
@@ -104,9 +113,14 @@ export function createReduce(): Reduce {
       if (!ctx || !pipelines || !params) {
         throw new UsageError(ERR.USAGE, 'reduce.sumInto called before prepare() — await reduce.prepare() first');
       }
+      // guard 在参数校验之后打开(P2-1 教训:校验抛错不锁闸)
+      if (guardArmed && guardOpen) {
+        throw new UsageError(ERR.USAGE, 'reduce.sumInto called twice before submit — shared params would be overwritten (encode-once-per-submit contract). Call endSubmit() after your submit, or use reduce.sum().');
+      }
       if (!Number.isInteger(count) || count < 0) {
         throw new UsageError(ERR.USAGE, `reduce count must be a non-negative integer, got ${String(count)}`);
       }
+      if (guardArmed) guardOpen = true;
       const device = ctx.device;
       const b = new ArrayBuffer(USIZE);
       const v = new DataView(b);
@@ -145,10 +159,19 @@ export function createReduce(): Reduce {
       this.sumInto(enc, src.gpuBuffer, count, dstBuf!);
       enc.copyBufferToBuffer(dstBuf!, 0, readBuf!, 0, 4);
       device.queue.submit([enc.finish()]);
+      guardOpen = false;
       await readBuf!.mapAsync(GPUMapMode.READ);
       const v = new DataView(readBuf!.getMappedRange().slice(0)).getUint32(0, true);
       readBuf!.unmap();
       return v;
+    },
+
+    endSubmit(): void {
+      guardOpen = false;
+    },
+
+    resetEncodeGuard(): void {
+      guardArmed = false;
     },
 
     destroy(): void {
@@ -157,6 +180,7 @@ export function createReduce(): Reduce {
       readBuf?.destroy();
       params = dstBuf = readBuf = null;
       pipelines = null;
+      guardOpen = false;
     },
   };
 }

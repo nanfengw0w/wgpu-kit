@@ -106,14 +106,20 @@ export function generateElementKernel(spec: ElementKernelSpec): {
   // —— 静态使用分析:layout:'auto' 的绑定组布局只含入口点**实际引用**的绑定。
   // 声明了但 userFn 没用到的字段若塞进 bind group → 校验错误且被异步吞掉
   // (表现为核不生效)。
-  // 提取管线(外部审查 P1-3 后的两级修订):
-  //   ① 剥注释 —— WGSL 解析器剥注释,注释里提及字段名不构成使用;
-  //   ② 可达性闭包 —— 词法全文匹配会把**定义了但 main 不可达**的 helper
-  //      (如 `fn unusedHelper() { ghost[idx] = ...; }`)误判为使用。改为:
-  //      从 userFn 出发,沿"调用了的函数"闭包收集可达函数体,只在可达体内
-  //      匹配字段 token。WGSL 无函数指针/高阶函数,调用图静态可判定。
+  // 提取管线(外部审查两轮修订):
+  //   ① 剥注释 —— 注释里提及字段名不构成使用;
+  //   ② 剥 struct 声明体 + 成员访问(复审 P1-2)—— `struct Item { ghost: f32 }`
+  //      的成员声明和 `item.ghost` 的成员访问都不构成对全局资源 ghost 的使用;
+  //   ③ 可达性闭包 —— 定义了但 userFn 不可达的 helper 不算使用;
+  //   ④ 词法 token 匹配只在可达体内进行。
+  // 诚实边界:函数内 let 局部变量与全局资源同名的遮蔽场景无法词法判定,
+  // 需要真 WGSL 解析器(见 schema.ts 的边界声明);此前已知并文档化。
   // params(binding 0)因 params.count 恒被使用。
-  const codeNoComments = spec.code.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ');
+  const codeNoComments = spec.code
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/.*$/gm, ' ')
+    .replace(/struct\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\}/g, ' ')
+    .replace(/\.\s*[A-Za-z_][A-Za-z0-9_]*/g, ' ');
   // 收集 userFn 可达的函数体(text);无 userFn(坏输入)时退化为全文匹配,
   // 让后续编译错误正常浮出而不是静默误判
   const reachableBodies = (): string[] => {
@@ -307,10 +313,11 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       if (encodeGuardArmed && encodeGuardOpen) {
         throw new UsageError(ERR.USAGE, `kernel "${normalized.name}".encode called twice before submit — the shared uniform would be overwritten (encode-once-per-submit contract; see docs). Call submit between encodes, or create one kernel instance per concurrent encode.`);
       }
-      if (encodeGuardArmed) encodeGuardOpen = true;
       const device = cachedCtx.device;
 
       // —— 资源校验 + 有序收集(预展开清单,稳态零分配) ——
+      // 注意顺序(外部审查 P2-1):guard 在校验**之后**才打开——校验抛错时
+      // 不锁闸,同一 encoder 上用正确资源重试必须可行
       const ordered: Buffer[] = [];
       let count = -1;
       let firstKey = '';
@@ -328,6 +335,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
         }
         ordered.push(buf);
       }
+      if (encodeGuardArmed) encodeGuardOpen = true;
 
       // —— uniform 打包上传 ——
       packUniformInto(sharedPack, uniformLayout, { ...uniforms, count });

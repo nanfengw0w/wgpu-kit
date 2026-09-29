@@ -86,7 +86,13 @@ export class GpuContext {
       const supported = (adapter.limits as unknown as Record<string, number>)[key];
       if (typeof supported === 'number') requiredLimits[key] = supported;
     }
-    const device = await adapter.requestDevice({ label: 'wgpu-kit', requiredLimits });
+    const device = await adapter.requestDevice({
+      label: 'wgpu-kit',
+      requiredLimits,
+      // timestamp-query 是可选能力,默认不启用(复审 P1-3):adapter 支持就请求,
+      // 否则 observe.timeGpu 在默认路径永远抛"特性缺失"——即使硬件完全支持
+      requiredFeatures: adapter.features.has('timestamp-query') ? ['timestamp-query'] : [],
+    });
     return new GpuContext(device, label, adapter);
   }
 
