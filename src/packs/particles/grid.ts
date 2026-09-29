@@ -10,7 +10,7 @@
  */
 
 export const GRID_WORKGROUP = 64;
-export const SCAN_WORKGROUP = 256;
+
 
 /** cellOf:世界坐标 → 格子索引(世界固定 [-worldHalf, worldHalf],格宽 = 2*worldHalf/gridSize) */
 export const CELL_OF = /* wgsl */ `

@@ -5,6 +5,7 @@
  * 由 harness(scripts/verify.mjs)无头运行;页面契约同 spike。
  */
 import { GpuContext, Buffer, elementKernel, rawKernel, PingPong, CompileError, UsageError, defineSchema, particles, type Vec2 } from '../../src/index.ts';
+import { timeGpu } from '../../src/observe.ts';
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
 const report = (name: string, pass: boolean, detail = '') => {
@@ -296,6 +297,47 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     const ok = rows[4] === 12 && rows[5] === 18;
     report('vector-uniform', ok, `out[2]=[${rows[4]},${rows[5]}](期 [12,18];uniform 向量化)`);
     buf.destroy();
+  }
+
+  // T13 编码合同:两个 kernel 写进同一条计算链(一次提交),效果串联
+  // 背景:encode 合同是 v2.0 的头号特性,必须有直接探针——此前只有 run() 间接覆盖
+  {
+    const n = 64;
+    const buf = await Buffer.create('f32', n);
+    const ka = elementKernel({ name: 'chain-double', state: { x: 'f32' }, code: 'fn userFn(idx: u32) { x[idx] = x[idx] * 2.0; }' });
+    const kb = elementKernel({ name: 'chain-inc', state: { y: 'f32' }, inputs: { a: 'f32' }, code: 'fn userFn(idx: u32) { y[idx] = a[idx] + 1.0; }' });
+    await Promise.all([ka.prepare(), kb.prepare()]);
+    const a = await Buffer.create('f32', n);
+    a.write(new Float32Array(n).map((_, i) => i));
+    const b = await Buffer.create('f32', n);
+    // 链:x=数据 → A(×2 写 a) → B(a 读入 +1 写 b) —— 一次提交
+    const enc = ctx.device.createCommandEncoder();
+    ka.encode(enc, { x: a });
+    kb.encode(enc, { y: b, a });
+    ctx.device.queue.submit([enc.finish()]);
+    await ctx.sync();
+    const got = (await b.read()) as Float32Array;
+    const ok = got[10] === 21 && got[63] === 127;
+    report('encode-contract-chain', ok, `b[10]=${got[10]} b[63]=${got[63]}(期 21/127;双 kernel 单提交串联)`);
+    buf.destroy();
+    a.destroy();
+    b.destroy();
+  }
+
+  // T14 timeGpu 三段提交修复:必须测得非零 GPU 时间(旧实现双时间戳背靠背,Δ≈0)
+  // T14 timeGpu 三段提交修复:必须测得非零 GPU 时间(旧实现双时间戳背靠背,Δ≈0)
+  // timestamp-query 需要设备特性;缺失时跳过(特性探针原则),不判失败
+  if (ctx.device.features.has('timestamp-query')) {
+    const buf = await Buffer.create('f32', 1 << 20); // 1M 元素,保证 GPU 时间 > 0
+    const k = elementKernel({ name: 'timed', state: { x: 'f32' }, code: 'fn userFn(idx: u32) { x[idx] = x[idx] * 1.0000001 + 0.5; }' });
+    const ms = await timeGpu(async () => {
+      for (let i = 0; i < 20; i++) await k.run({ x: buf });
+    });
+    const ok = Number.isFinite(ms) && ms > 0 && ms < 5000;
+    report('timegpu-brackets-work', ok, `${ms.toFixed(3)} ms(20 次提交;须 > 0 且 < 5000)`);
+    buf.destroy();
+  } else {
+    report('timegpu-brackets-work', true, 'skipped: 设备不支持 timestamp-query(特性探针原则,真机验证)');
   }
 
   await ctx.sync();
