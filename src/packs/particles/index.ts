@@ -6,7 +6,8 @@ import { createShaderModuleChecked } from '../../core/shader.ts';
 import { resolveConfig, type ParticlesConfig, type ResolvedConfig } from './config.ts';
 import { mulberry32, resolveMatrix, hashSeed, type ForceMatrix, type ForcePresetName } from './presets.ts';
 import { simWgsl, WORKGROUP } from './wgsl.ts';
-import { gridCountsWgsl, gridScanWgsl, gridScatterWgsl, gridForceWgsl } from './grid.ts';
+import { gridCountsWgsl, gridScanPostWgsl, gridScatterWgsl, gridForceWgsl } from './grid.ts';
+import { createScan, type Scan } from '../../primitives/scan.ts';
 import { ParticlesRenderer } from './render.ts';
 
 /**
@@ -42,6 +43,16 @@ interface UniformState {
 }
 
 const USIZE = 48;
+
+let sharedScan: Scan | null = null;
+async function prepareSharedScan(): Promise<void> {
+  sharedScan ??= createScan();
+  await sharedScan.prepare();
+}
+function getSharedScan(): Scan {
+  if (!sharedScan) throw new Error('shared scan not prepared — buildGrid must run first');
+  return sharedScan;
+}
 
 export async function particles(config: ParticlesConfig = {}): Promise<ParticlesSim> {
   const cfg = resolveConfig(config);
@@ -117,9 +128,10 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
   interface GridState {
     size: number;
     count: Buffer; start: Buffer; fill: Buffer; order: Buffer; partial: Buffer; sortedPos: Buffer; sortedSp: Buffer;
-    pCounts: GPUComputePipeline; pScan: GPUComputePipeline; pScatter: GPUComputePipeline; pForceCell: GPUComputePipeline; pForceInt: GPUComputePipeline;
+    pCounts: GPUComputePipeline; pPost: GPUComputePipeline; pScatter: GPUComputePipeline; pForceCell: GPUComputePipeline; pForceInt: GPUComputePipeline;
     bgCountsA: GPUBindGroup; bgCountsB: GPUBindGroup;
-    bgScan: GPUBindGroup;
+    bgPost: GPUBindGroup;
+    cells: number;
     bgScatterA: GPUBindGroup; bgScatterB: GPUBindGroup;
     bgForceCellAB: GPUBindGroup; bgForceCellBA: GPUBindGroup;
     bgIntegrateAB: GPUBindGroup; bgIntegrateBA: GPUBindGroup;
@@ -141,12 +153,13 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
     const order = await Buffer.create('u32', cfg.count);
     count.write(new Uint32Array(cells)); // 归零
 
+    await prepareSharedScan();
     const mCounts = await compile(gridCountsWgsl(), 'grid-counts');
-    const mScan = await compile(gridScanWgsl(), 'grid-scan');
+    const mPost = await compile(gridScanPostWgsl(), 'grid-scan-post');
     const mScatter = await compile(gridScatterWgsl(), 'grid-scatter');
     const mForce = await compile(gridForceWgsl(4), 'grid-force');
     const pCounts = await makePipeline(mCounts, 'main', 'grid-counts');
-    const pScan = await makePipeline(mScan, 'main', 'grid-scan');
+    const pPost = await makePipeline(mPost, 'main', 'grid-scan-post');
     const pScatter = await makePipeline(mScatter, 'main', 'grid-scatter');
     const pForceCell = await makePipeline(mForce, 'main_force_cell', 'grid-force-cell');
     const pForceInt = await makePipeline(mForce, 'main_force_integrate', 'grid-force-integrate');
@@ -162,12 +175,13 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         { binding: 2, resource: { buffer: count.gpuBuffer } },
       ],
     });
-    const bgScan = device.createBindGroup({
-      layout: pScan.getBindGroupLayout(0),
+    // scan 后置:cellFill 游标归位 + cellCount 归零(绑定主 uniform,读 cells)
+    const bgPost = device.createBindGroup({
+      layout: pPost.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: { buffer: count.gpuBuffer } },
-        { binding: 2, resource: { buffer: start.gpuBuffer } },
+        { binding: 1, resource: { buffer: start.gpuBuffer } },
+        { binding: 2, resource: { buffer: count.gpuBuffer } },
         { binding: 3, resource: { buffer: fill.gpuBuffer } },
       ],
     });
@@ -220,9 +234,10 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
     const state = {
       size,
       count, start, fill, order, partial, sortedPos, sortedSp,
-      pCounts, pScan, pScatter, pForceCell, pForceInt,
+      pCounts, pPost, pScatter, pForceCell, pForceInt,
       bgCountsA: bgCounts(sideA.pos), bgCountsB: bgCounts(sideB.pos),
-      bgScan,
+      bgPost,
+      cells,
       bgScatterA: bgScatter(sideA.pos), bgScatterB: bgScatter(sideB.pos),
       bgForceCellAB: bgForceCell(sideA.pos), bgForceCellBA: bgForceCell(sideB.pos),
       bgIntegrateAB: bgIntegrate(sideA, sideB), bgIntegrateBA: bgIntegrate(sideB, sideA),
@@ -304,11 +319,13 @@ export async function particles(config: ParticlesConfig = {}): Promise<Particles
         passCounts.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
         passCounts.end();
 
-        const passScan = enc.beginComputePass();
-        passScan.setPipeline(grid.pScan);
-        passScan.setBindGroup(0, grid.bgScan);
-        passScan.dispatchWorkgroups(1);
-        passScan.end();
+        // scan 本体 = core 原语:自管 pass 写进本 encoder(encoder 在 pass 间不被锁定)
+        getSharedScan().encode(enc, grid.count.gpuBuffer, grid.start.gpuBuffer, grid.cells, true);
+        const passPost = enc.beginComputePass({ label: 'grid-scan-post' });
+        passPost.setPipeline(grid.pPost);
+        passPost.setBindGroup(0, grid.bgPost);
+        passPost.dispatchWorkgroups(Math.ceil(grid.cells / 64));
+        passPost.end();
 
         const passScatter = enc.beginComputePass();
         passScatter.setPipeline(grid.pScatter);

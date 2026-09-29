@@ -1,8 +1,9 @@
 /**
- * grid 模式(spatial hash / counting sort)的四个 kernel。
- * 每帧在同一个 command encoder 里跑四遍:
+ * grid 模式(spatial hash / counting sort)的 kernel 组成。
+ * 每帧在同一个 command encoder 里跑五遍(scan 本体来自 core 原语层):
  *   ① counts  原子计数每格粒子数
- *   ② scan    单 workgroup 分块前缀和(cellStart/cellFill),顺带把 cellCount 归零给下一帧
+ *   ② scan    core 原语 scan(排他):counts → cellStart(primitives/scan.ts)
+ *   ②' post   cellFill 游标归位 + cellCount 归零(本文件的 gridScanPostWgsl)
  *   ③ scatter 按格散射出有序索引表 order
  *   ④ force   与 tiled 相同的力计算,但邻域遍历改为 3×3 个 cell 的有序区间
  * 相比 O(N²),复杂度 ≈ O(N · 邻域密度)——10 万粒子的大门。
@@ -43,14 +44,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 `;
 }
 
-export function gridScanWgsl(): string {
-  // 单 workgroup 分块扫描:256-cell 块循环推进,块内 Hillis-Steele,块间用
-  // workgroup 级 carry 串接。此前版本按多 workgroup 分两级写,但 dispatch(1)
-  // 只有 block 0 在跑 —— 256 格之外 cellStart 永远是 0、cellCount 永不清零,
-  // 对应粒子受力恒零被摩擦冻住(屏幕上出现水平"冻结带")。改成单 workgroup
-  // 循环后 barrier 是合法同步,正确性不依赖任何跨 workgroup 时序;
-  // cell 上限 65536 = 256 块,每块一轮微秒级,性能无虞。顺带把 cellCount
-  // 归零给下一帧。
+export function gridScanPostWgsl(): string {
+  // v2.0:scan 本体已上移 core 原语层(primitives/scan.ts,经 8 类边界探针的
+  // 位一致验证)。本 kernel 只做扫描后的应用侧收尾:cellFill 填充游标归位到
+  // 段起点(scatter 原子递增至 start+count)、cellCount 归零供下一帧。
   return /* wgsl */ `
 struct Params {
   count: u32, _pad0: u32,
@@ -59,52 +56,16 @@ struct Params {
   gridSize: u32, cells: u32, maxCand: u32,
 };
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read_write> cellStart: array<u32>;
+@group(0) @binding(1) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(2) var<storage, read_write> cellCount: array<u32>;
 @group(0) @binding(3) var<storage, read_write> cellFill: array<u32>;
 
-var<workgroup> partial: array<u32, ${SCAN_WORKGROUP}>;
-var<workgroup> carry: u32;
-
-@compute @workgroup_size(${SCAN_WORKGROUP})
-fn main(@builtin(local_invocation_id) lid: vec3u) {
-  let tid = lid.x;
-  let wg = ${SCAN_WORKGROUP}u;
-  let cells = params.cells;
-  let numChunks = (cells + wg - 1u) / wg;
-  if (tid == 0u) { carry = 0u; }
-  workgroupBarrier();
-  for (var ch = 0u; ch < numChunks; ch++) {
-    let idx = ch * wg + tid;
-    let inRange = idx < cells;
-    let v0 = select(0u, atomicLoad(&cellCount[idx]), inRange);
-    partial[tid] = v0;
-    workgroupBarrier();
-    // 块内含前缀(Hillis-Steele)
-    var offset = 1u;
-    loop {
-      if (offset >= wg) { break; }
-      var v = 0u;
-      if (tid >= offset) { v = partial[tid - offset]; }
-      workgroupBarrier();
-      if (tid >= offset) { partial[tid] = partial[tid] + v; }
-      workgroupBarrier();
-      offset = offset << 1u;
-    }
-    // 排他:start = carry + 块内前缀(不含自身);fill 是 scatter 的原子填充
-    // 游标,初始化为段起点(与通用包 NeighborGrid 同语义)——scatter 填完一格
-    // 后 fill 恰好 = start + count,力核读 [start, fill) 才不会多扫下一格的粒子。
-    if (inRange) {
-      let excl = partial[tid] - v0;
-      cellStart[idx] = carry + excl;
-      cellFill[idx] = carry + excl;
-      atomicStore(&cellCount[idx], 0u);
-    }
-    // 所有线程读完 partial/写完 carry 后才能进入下一块
-    workgroupBarrier();
-    if (tid == wg - 1u) { carry = carry + partial[wg - 1u]; }
-    workgroupBarrier();
-  }
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= params.cells) { return; }
+  cellFill[i] = cellStart[i];
+  cellCount[i] = 0u;
 }
 `;
 }

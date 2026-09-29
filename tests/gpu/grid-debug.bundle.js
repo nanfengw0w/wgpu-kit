@@ -691,7 +691,6 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 
 // src/packs/particles/grid.ts
 var GRID_WORKGROUP = 64;
-var SCAN_WORKGROUP = 256;
 var CELL_OF = (
   /* wgsl */
   `
@@ -727,7 +726,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 `
   );
 }
-function gridScanWgsl() {
+function gridScanPostWgsl() {
   return (
     /* wgsl */
     `
@@ -738,52 +737,16 @@ struct Params {
   gridSize: u32, cells: u32, maxCand: u32,
 };
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read_write> cellStart: array<u32>;
+@group(0) @binding(1) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(2) var<storage, read_write> cellCount: array<u32>;
 @group(0) @binding(3) var<storage, read_write> cellFill: array<u32>;
 
-var<workgroup> partial: array<u32, ${SCAN_WORKGROUP}>;
-var<workgroup> carry: u32;
-
-@compute @workgroup_size(${SCAN_WORKGROUP})
-fn main(@builtin(local_invocation_id) lid: vec3u) {
-  let tid = lid.x;
-  let wg = ${SCAN_WORKGROUP}u;
-  let cells = params.cells;
-  let numChunks = (cells + wg - 1u) / wg;
-  if (tid == 0u) { carry = 0u; }
-  workgroupBarrier();
-  for (var ch = 0u; ch < numChunks; ch++) {
-    let idx = ch * wg + tid;
-    let inRange = idx < cells;
-    let v0 = select(0u, atomicLoad(&cellCount[idx]), inRange);
-    partial[tid] = v0;
-    workgroupBarrier();
-    // \u5757\u5185\u542B\u524D\u7F00(Hillis-Steele)
-    var offset = 1u;
-    loop {
-      if (offset >= wg) { break; }
-      var v = 0u;
-      if (tid >= offset) { v = partial[tid - offset]; }
-      workgroupBarrier();
-      if (tid >= offset) { partial[tid] = partial[tid] + v; }
-      workgroupBarrier();
-      offset = offset << 1u;
-    }
-    // \u6392\u4ED6:start = carry + \u5757\u5185\u524D\u7F00(\u4E0D\u542B\u81EA\u8EAB);fill \u662F scatter \u7684\u539F\u5B50\u586B\u5145
-    // \u6E38\u6807,\u521D\u59CB\u5316\u4E3A\u6BB5\u8D77\u70B9(\u4E0E\u901A\u7528\u5305 NeighborGrid \u540C\u8BED\u4E49)\u2014\u2014scatter \u586B\u5B8C\u4E00\u683C
-    // \u540E fill \u6070\u597D = start + count,\u529B\u6838\u8BFB [start, fill) \u624D\u4E0D\u4F1A\u591A\u626B\u4E0B\u4E00\u683C\u7684\u7C92\u5B50\u3002
-    if (inRange) {
-      let excl = partial[tid] - v0;
-      cellStart[idx] = carry + excl;
-      cellFill[idx] = carry + excl;
-      atomicStore(&cellCount[idx], 0u);
-    }
-    // \u6240\u6709\u7EBF\u7A0B\u8BFB\u5B8C partial/\u5199\u5B8C carry \u540E\u624D\u80FD\u8FDB\u5165\u4E0B\u4E00\u5757
-    workgroupBarrier();
-    if (tid == wg - 1u) { carry = carry + partial[wg - 1u]; }
-    workgroupBarrier();
-  }
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= params.cells) { return; }
+  cellFill[i] = cellStart[i];
+  cellCount[i] = 0u;
 }
 `
   );
@@ -918,6 +881,293 @@ fn main_force_integrate(@builtin(global_invocation_id) gid: vec3u) {
   );
 }
 
+// src/primitives/scan.ts
+var WG = 256;
+var ITEMS = 32;
+var SEGMENT = WG * ITEMS;
+var TIER1_CAP = WG * WG;
+var WGSL = (
+  /* wgsl */
+  `
+struct Params {
+  count: u32, exclusive: u32, blockCount: u32, _p0: u32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> src: array<u32>;
+@group(0) @binding(2) var<storage, read_write> dst: array<u32>;
+@group(0) @binding(3) var<storage, read_write> blockSums: array<u32>;
+
+var<workgroup> partial: array<u32, ${WG}>;
+var<workgroup> carry: u32;
+
+// \u2014\u2014 \u5355\u6863:\u5355 workgroup \u5206\u5757\u5FAA\u73AF(carry \u4E32\u63A5),dispatch(1) \u2014\u2014
+@compute @workgroup_size(${WG})
+fn scan_single(@builtin(local_invocation_id) lid: vec3u) {
+  let tid = lid.x;
+  let wg = ${WG}u;
+  let count = params.count;
+  let numChunks = (count + wg - 1u) / wg;
+  if (tid == 0u) { carry = 0u; }
+  workgroupBarrier();
+  for (var ch = 0u; ch < numChunks; ch = ch + 1u) {
+    let i = ch * wg + tid;
+    let inRange = i < count;
+    let v = select(0u, src[i], inRange);
+    partial[tid] = v;
+    workgroupBarrier();
+    var offset = 1u;
+    loop {
+      if (offset >= wg) { break; }
+      var x = 0u;
+      if (tid >= offset) { x = partial[tid - offset]; }
+      workgroupBarrier();
+      if (tid >= offset) { partial[tid] = partial[tid] + x; }
+      workgroupBarrier();
+      offset = offset << 1u;
+    }
+    if (inRange) {
+      let incl = partial[tid];
+      dst[i] = select(carry + incl, carry + incl - v, params.exclusive == 1u);
+    }
+    workgroupBarrier();
+    if (tid == wg - 1u) { carry = carry + partial[wg - 1u]; }
+    workgroupBarrier();
+  }
+}
+
+// \u2014\u2014 \u591A\u6863\u2460:\u5404 workgroup \u626B\u81EA\u5DF1\u7684 8192 \u5143\u7D20\u6BB5 \u2014\u2014
+@compute @workgroup_size(${WG})
+fn scan_block(
+  @builtin(global_invocation_id) gid: vec3u,
+  @builtin(local_invocation_id) lid: vec3u,
+  @builtin(workgroup_id) wid: vec3u,
+) {
+  let tid = lid.x;
+  let segBase = wid.x * ${SEGMENT}u;
+  // \u6BCF\u7EBF\u7A0B\u6301\u8FDE\u7EED ${ITEMS} \u9879(\u7EBF\u6027\u987A\u5E8F)\u2014\u2014scan \u7684\u524D\u7F00\u5FC5\u987B\u8DDF\u968F\u7EBF\u6027\u7D22\u5F15,
+  // strided \u5206\u6CBB\u53EA\u5BF9 order-independent \u7684 reduce \u6210\u7ACB
+  var local = 0u;
+  for (var j = 0u; j < ${ITEMS}u; j = j + 1u) {
+    let i = segBase + tid * ${ITEMS}u + j;
+    if (i < params.count) { local = local + src[i]; }
+  }
+  partial[tid] = local;
+  workgroupBarrier();
+  var offset = 1u;
+  loop {
+    if (offset >= ${WG}u) { break; }
+    var x = 0u;
+    if (tid >= offset) { x = partial[tid - offset]; }
+    workgroupBarrier();
+    if (tid >= offset) { partial[tid] = partial[tid] + x; }
+    workgroupBarrier();
+    offset = offset << 1u;
+  }
+  // \u6BB5\u5185\u6392\u4ED6\u524D\u7F00(\u5168\u5C40\u57FA\u5740\u7531 pass\u2462 \u52A0)
+  var run = 0u;
+  if (tid > 0u) { run = partial[tid - 1u]; }
+  for (var j = 0u; j < ${ITEMS}u; j = j + 1u) {
+    let i = segBase + tid * ${ITEMS}u + j;
+    if (i < params.count) { dst[i] = run; run = run + src[i]; }
+  }
+  if (tid == ${WG - 1}u) { blockSums[wid.x] = partial[${WG - 1}u]; }
+}
+
+// \u2014\u2014 \u591A\u6863\u2461:\u5355 workgroup \u5206\u5757\u626B\u5757\u548C(\u6392\u4ED6,\u539F\u5730;\u5757\u6570 \u2264 ${TIER1_CAP}) \u2014\u2014
+@compute @workgroup_size(${WG})
+fn scan_bases(@builtin(local_invocation_id) lid: vec3u) {
+  let tid = lid.x;
+  let wg = ${WG}u;
+  let count = params.count; // paramsB.count = \u5757\u6570(\u7EA6\u5B9A)
+  let numChunks = (count + wg - 1u) / wg;
+  if (tid == 0u) { carry = 0u; }
+  workgroupBarrier();
+  for (var ch = 0u; ch < numChunks; ch = ch + 1u) {
+    let i = ch * wg + tid;
+    let inRange = i < count;
+    let v = select(0u, blockSums[i], inRange);
+    partial[tid] = v;
+    workgroupBarrier();
+    var offset = 1u;
+    loop {
+      if (offset >= wg) { break; }
+      var x = 0u;
+      if (tid >= offset) { x = partial[tid - offset]; }
+      workgroupBarrier();
+      if (tid >= offset) { partial[tid] = partial[tid] + x; }
+      workgroupBarrier();
+      offset = offset << 1u;
+    }
+    if (inRange) {
+      blockSums[i] = carry + partial[tid] - v; // \u6392\u4ED6
+    }
+    workgroupBarrier();
+    if (tid == wg - 1u) { carry = carry + partial[wg - 1u]; }
+    workgroupBarrier();
+  }
+}
+
+// \u2014\u2014 \u591A\u6863\u2462:\u52A0\u57FA\u5740(\u6392\u4ED6:+base;\u542B:+base+src) \u2014\u2014
+@compute @workgroup_size(${WG})
+fn add_bases(
+  @builtin(global_invocation_id) gid: vec3u,
+  @builtin(local_invocation_id) lid: vec3u,
+  @builtin(workgroup_id) wid: vec3u,
+) {
+  let tid = lid.x;
+  let base = blockSums[wid.x];
+  let segBase = wid.x * ${SEGMENT}u;
+  for (var j = 0u; j < ${ITEMS}u; j = j + 1u) {
+    let i = segBase + j * ${WG}u + tid;
+    if (i < params.count) {
+      let v = select(0u, src[i], params.exclusive == 0u);
+      dst[i] = dst[i] + base + v;
+    }
+  }
+}
+`
+);
+var USIZE = 16;
+var BLOCK_COUNT_CAP = TIER1_CAP;
+function createScan() {
+  let ctx = null;
+  let pipelines = null;
+  let paramsA = null;
+  let paramsB = null;
+  let blockSums = null;
+  let blockSumsCap = 0;
+  const writeParams = (buf, count, exclusive, blockCount) => {
+    const b = new ArrayBuffer(USIZE);
+    const v = new DataView(b);
+    v.setUint32(0, count, true);
+    v.setUint32(4, exclusive ? 1 : 0, true);
+    v.setUint32(8, blockCount, true);
+    v.setUint32(12, 0, true);
+    ctx.device.queue.writeBuffer(buf, 0, b);
+  };
+  return {
+    async prepare() {
+      if (ctx && pipelines) return;
+      ctx = await GpuContext.get();
+      const device = ctx.device;
+      const module = device.createShaderModule({ code: WGSL, label: "primitives-scan" });
+      const info = await module.getCompilationInfo();
+      const errors = info.messages.filter((m) => m.type === "error");
+      if (errors.length > 0) {
+        throw new UsageError(ERR.COMPILE, `scan primitive WGSL error: ${errors[0].message.slice(0, 160)}`);
+      }
+      const mk = (ep) => device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: ep } });
+      pipelines = {
+        pSingle: mk("scan_single"),
+        pBlock: mk("scan_block"),
+        pBases: mk("scan_bases"),
+        pAdd: mk("add_bases")
+      };
+      paramsA = device.createBuffer({ size: USIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "scan-params-a" });
+      paramsB = device.createBuffer({ size: USIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "scan-params-b" });
+    },
+    encode(encoder, src, dst, count, exclusive = true) {
+      if (!ctx || !pipelines || !paramsA || !paramsB) {
+        throw new UsageError(ERR.USAGE, "scan.encode called before prepare() \u2014 await scan.prepare() first");
+      }
+      if (!Number.isInteger(count) || count < 0) {
+        throw new UsageError(ERR.USAGE, `scan count must be a non-negative integer, got ${String(count)}`);
+      }
+      if (count === 0) return;
+      if (count > SEGMENT * BLOCK_COUNT_CAP) {
+        throw new UsageError(ERR.USAGE, `scan count ${count} exceeds supported cap ${SEGMENT * BLOCK_COUNT_CAP}`);
+      }
+      const device = ctx.device;
+      const flag = exclusive ? 1 : 0;
+      if (count <= TIER1_CAP) {
+        writeParams(paramsA, count, exclusive, 0);
+        const bg = device.createBindGroup({
+          layout: pipelines.pSingle.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: paramsA } },
+            { binding: 1, resource: { buffer: src } },
+            { binding: 2, resource: { buffer: dst } }
+          ]
+        });
+        const pass = encoder.beginComputePass({ label: "scan-single" });
+        pass.setPipeline(pipelines.pSingle);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(1);
+        pass.end();
+        return;
+      }
+      const blockCount = Math.ceil(count / SEGMENT);
+      if (blockCount > blockSumsCap) {
+        blockSums?.destroy();
+        blockSums = device.createBuffer({
+          size: blockCount * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          label: "scan-blocksums"
+        });
+        blockSumsCap = blockCount;
+      }
+      writeParams(paramsA, count, exclusive, blockCount);
+      writeParams(paramsB, blockCount, true, 0);
+      const bgBlock = device.createBindGroup({
+        layout: pipelines.pBlock.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: paramsA } },
+          { binding: 1, resource: { buffer: src } },
+          { binding: 2, resource: { buffer: dst } },
+          { binding: 3, resource: { buffer: blockSums } }
+        ]
+      });
+      const bgBases = device.createBindGroup({
+        layout: pipelines.pBases.getBindGroupLayout(0),
+        // scan_bases 只静态使用 params(0) 与 blockSums(3) —— 多给即校验失败
+        entries: [
+          { binding: 0, resource: { buffer: paramsB } },
+          { binding: 3, resource: { buffer: blockSums } }
+        ]
+      });
+      const bgAdd = device.createBindGroup({
+        layout: pipelines.pAdd.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: paramsA } },
+          { binding: 1, resource: { buffer: src } },
+          { binding: 2, resource: { buffer: dst } },
+          { binding: 3, resource: { buffer: blockSums } }
+        ]
+      });
+      const pass1 = encoder.beginComputePass({ label: "scan-block" });
+      pass1.setPipeline(pipelines.pBlock);
+      pass1.setBindGroup(0, bgBlock);
+      pass1.dispatchWorkgroups(blockCount);
+      pass1.end();
+      const pass2 = encoder.beginComputePass({ label: "scan-bases" });
+      pass2.setPipeline(pipelines.pBases);
+      pass2.setBindGroup(0, bgBases);
+      pass2.dispatchWorkgroups(1);
+      pass2.end();
+      const pass3 = encoder.beginComputePass({ label: "scan-add" });
+      pass3.setPipeline(pipelines.pAdd);
+      pass3.setBindGroup(0, bgAdd);
+      pass3.dispatchWorkgroups(blockCount);
+      pass3.end();
+    },
+    async run(src, dst, count, exclusive = true) {
+      await this.prepare();
+      const enc = ctx.device.createCommandEncoder();
+      this.encode(enc, src.gpuBuffer, dst.gpuBuffer, count, exclusive);
+      ctx.device.queue.submit([enc.finish()]);
+    },
+    destroy() {
+      blockSums?.destroy();
+      blockSums = null;
+      blockSumsCap = 0;
+      paramsA?.destroy();
+      paramsB?.destroy();
+      paramsA = paramsB = null;
+      pipelines = null;
+    }
+  };
+}
+
 // src/packs/particles/render.ts
 var nextId = 0;
 var ids = /* @__PURE__ */ new WeakMap();
@@ -1030,7 +1280,16 @@ var ParticlesRenderer = class _ParticlesRenderer {
 };
 
 // src/packs/particles/index.ts
-var USIZE = 48;
+var USIZE2 = 48;
+var sharedScan = null;
+async function prepareSharedScan() {
+  sharedScan ??= createScan();
+  await sharedScan.prepare();
+}
+function getSharedScan() {
+  if (!sharedScan) throw new Error("shared scan not prepared \u2014 buildGrid must run first");
+  return sharedScan;
+}
 async function particles(config = {}) {
   const cfg = resolveConfig(config);
   const ctx = await GpuContext.get();
@@ -1054,11 +1313,11 @@ async function particles(config = {}) {
     matrix.write(new Float32Array(cfg.forces));
   }
   const phys = { rMax: cfg.rMax, beta: cfg.beta, forceFactor: cfg.forceFactor, frictionHalfLife: cfg.frictionHalfLife, dt: cfg.dt };
-  const uniform = device.createBuffer({ size: USIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "particles-params" });
+  const uniform = device.createBuffer({ size: USIZE2, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "particles-params" });
   const gridSizeOf = (rMax, half = worldHalf) => Math.max(4, Math.floor(2 * half / Math.max(rMax, 1e-3)));
   let gridSize = gridSizeOf(phys.rMax, worldHalf);
   const writeUniform = (dt) => {
-    const buf = new ArrayBuffer(USIZE);
+    const buf = new ArrayBuffer(USIZE2);
     const v = new DataView(buf);
     v.setUint32(0, cfg.count, true);
     v.setUint32(4, 0, true);
@@ -1104,12 +1363,13 @@ async function particles(config = {}) {
     const fill = await Buffer.create("u32", cells);
     const order = await Buffer.create("u32", cfg.count);
     count.write(new Uint32Array(cells));
+    await prepareSharedScan();
     const mCounts = await compile(gridCountsWgsl(), "grid-counts");
-    const mScan = await compile(gridScanWgsl(), "grid-scan");
+    const mPost = await compile(gridScanPostWgsl(), "grid-scan-post");
     const mScatter = await compile(gridScatterWgsl(), "grid-scatter");
     const mForce = await compile(gridForceWgsl(4), "grid-force");
     const pCounts = await makePipeline(mCounts, "main", "grid-counts");
-    const pScan = await makePipeline(mScan, "main", "grid-scan");
+    const pPost = await makePipeline(mPost, "main", "grid-scan-post");
     const pScatter = await makePipeline(mScatter, "main", "grid-scatter");
     const pForceCell = await makePipeline(mForce, "main_force_cell", "grid-force-cell");
     const pForceInt = await makePipeline(mForce, "main_force_integrate", "grid-force-integrate");
@@ -1124,12 +1384,12 @@ async function particles(config = {}) {
         { binding: 2, resource: { buffer: count.gpuBuffer } }
       ]
     });
-    const bgScan = device.createBindGroup({
-      layout: pScan.getBindGroupLayout(0),
+    const bgPost = device.createBindGroup({
+      layout: pPost.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uniform } },
-        { binding: 1, resource: { buffer: count.gpuBuffer } },
-        { binding: 2, resource: { buffer: start.gpuBuffer } },
+        { binding: 1, resource: { buffer: start.gpuBuffer } },
+        { binding: 2, resource: { buffer: count.gpuBuffer } },
         { binding: 3, resource: { buffer: fill.gpuBuffer } }
       ]
     });
@@ -1186,13 +1446,14 @@ async function particles(config = {}) {
       sortedPos,
       sortedSp,
       pCounts,
-      pScan,
+      pPost,
       pScatter,
       pForceCell,
       pForceInt,
       bgCountsA: bgCounts(sideA.pos),
       bgCountsB: bgCounts(sideB.pos),
-      bgScan,
+      bgPost,
+      cells,
       bgScatterA: bgScatter(sideA.pos),
       bgScatterB: bgScatter(sideB.pos),
       bgForceCellAB: bgForceCell(sideA.pos),
@@ -1268,11 +1529,12 @@ async function particles(config = {}) {
         passCounts.setBindGroup(0, useAB ? grid.bgCountsA : grid.bgCountsB);
         passCounts.dispatchWorkgroups(Math.ceil(cfg.count / WORKGROUP));
         passCounts.end();
-        const passScan = enc.beginComputePass();
-        passScan.setPipeline(grid.pScan);
-        passScan.setBindGroup(0, grid.bgScan);
-        passScan.dispatchWorkgroups(1);
-        passScan.end();
+        getSharedScan().encode(enc, grid.count.gpuBuffer, grid.start.gpuBuffer, grid.cells, true);
+        const passPost = enc.beginComputePass({ label: "grid-scan-post" });
+        passPost.setPipeline(grid.pPost);
+        passPost.setBindGroup(0, grid.bgPost);
+        passPost.dispatchWorkgroups(Math.ceil(grid.cells / 64));
+        passPost.end();
         const passScatter = enc.beginComputePass();
         passScatter.setPipeline(grid.pScatter);
         passScatter.setBindGroup(0, useAB ? grid.bgScatterA : grid.bgScatterB);
@@ -1558,6 +1820,9 @@ function jsReference(particleIdx, frames) {
 }
 async function main() {
   const ctx = await GpuContext.get();
+  ctx.device.addEventListener?.("uncapturederror", (e) => {
+    report("gpu-validation-error", false, String(e.error?.message ?? e).slice(0, 250));
+  });
   {
     const sim = await particles({ ...CFG, mode: "grid", maxNeighbors: 999999 });
     const dbg = sim.debugGrid?.();
