@@ -1050,7 +1050,7 @@ fn add_bases(
 `
 );
 var USIZE = 16;
-var BLOCK_COUNT_CAP = TIER1_CAP;
+var BLOCK_COUNT_CAP = TIER1_CAP - 1;
 function createScan() {
   let ctx = null;
   let pipelines = null;

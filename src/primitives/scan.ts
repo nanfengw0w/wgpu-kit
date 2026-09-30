@@ -168,7 +168,7 @@ fn add_bases(
 `;
 
 const USIZE = 16;
-const BLOCK_COUNT_CAP = TIER1_CAP; // scan_bases 单 workgroup 分块可扫至 65536 块 → N ≤ 536M
+const BLOCK_COUNT_CAP = TIER1_CAP - 1; // WebGPU maxComputeWorkgroupsPerDimension = 65535(第四轮审查 P2)
 
 export interface Scan {
   /** 幂等准备:解析上下文与内部 uniform。encode 前必须完成 */

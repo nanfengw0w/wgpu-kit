@@ -731,23 +731,28 @@ GPU; `sum` is the readback convenience). Both follow the same encode-once
 contract as kernels — encode once per submit, `endSubmit()` re-arms.
 
 ```ts
-import { createScan, createReduce } from 'wgpu-kit';
+import { Buffer, createScan, createReduce } from 'wgpu-kit';
 
 const scan = createScan();
 await scan.prepare();
 const src = await Buffer.create('u32', 100_000);
 const dst = await Buffer.create('u32', 100_000);
-scan.run(src, dst, 100_000, true);            // exclusive prefix sum
-const total = src.slice ? (await dst.read()) : null;
+src.write(new Uint32Array(100_000).map((_, i) => i));
+await scan.run(src, dst, 100_000, true);      // exclusive prefix sum
+const prefix = (await dst.read()) as Uint32Array;
+prefix[3]; // = 0+1+2 = 3
 
 const reduce = createReduce();
 await reduce.prepare();
-const sum = await reduce.sum(src, 100_000);   // convenience readback
+const sum = await reduce.sum(src, 100_000);   // convenience readback (Σ)
+const reduce = createReduce();
+await reduce.prepare();
+const sum = await reduce.sum(src, 100_000);   // convenience readback (Σ)
 ```
 
-Dispatch limits follow the WebGPU spec: block count ≤ 65535
-(`scan`), count ≤ 8192 × 65535 (`reduce`) — validated with clear
-`UsageError`s.
+Dispatch limits follow the WebGPU spec — validated up front with clear
+`UsageError`s: block count ≤ 65535 (`scan`, i.e. count ≤ 8192 × 65535) and
+count ≤ 8192 × 65535 (`reduce`).
 
 ---
 
