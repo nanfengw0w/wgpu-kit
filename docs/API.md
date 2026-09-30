@@ -31,6 +31,13 @@ and requests the adapter's maximum storage-buffer limits automatically.
 Returns the global singleton, creating it on first call. Failures clear the
 cached promise so the environment can be retried after a fix.
 
+##### GpuContext.adopt ( device : GPUDevice ) : GpuContext — v2.0
+
+Wrap a **caller-owned** device (TypeGPU interop bridge: pass
+`tgpu.init()`'s device here). The library singleton and every `Buffer.create`
+then run on the adopted device. Must be called **before** the first `get()` —
+adopting mid-run throws.
+
 ### Properties
 
 | Property | Type | Description |
@@ -161,7 +168,7 @@ await integrate.replace(`
 | name | string | Debug label (appears in errors) | `'kernel'` |
 | state | Record\<string, ScalarKind\> | Read-**write** buffers | `{}` |
 | inputs | Record\<string, ScalarKind\> | **Read-only** buffers | `{}` |
-| uniforms | Record\<string, UniformValue\> | Uniform values — scalars or vectors (`{x, y, z?, w?}` for `vec2f/vec3f/vec4f`) | `{}` |
+| uniforms | Record\<string, ScalarKind\> | Uniform fields — declared as `ScalarKind` (f32/i32/u32/vec2f/…); the **values** passed at run/encode time are `UniformValue` (scalars or `{x,y,z?,w?}`) | `{}` |
 | workgroupSize | number | Workgroup size, range 1..512 | `64` |
 | code | string | User WGSL function, **must be named `userFn`** | required |
 
@@ -173,6 +180,14 @@ await integrate.replace(`
 4. `state`/`inputs` field names are arrays inside the function — index them directly;
 5. `count` is a reserved name (injected automatically from the first resource);
 6. Field names across state/inputs/uniforms must not repeat.
+
+**Lexical-analysis boundary (known limitation):** resource usage is detected
+after stripping comments, `struct` declarations, member accesses (`.field`)
+and non-reachable helpers. A `let` local variable that **shadows** a resource
+name (`let ghost = 2.0;` while a `ghost` buffer is declared) still counts as a
+use — the buffer joins the bind group and the dispatch may be rejected. Rename
+the local to avoid it (a true WGSL parser is out of scope; see the
+honest-boundary note under `defineSchema`).
 
 Throws `UsageError` on invalid descriptors, reserved names, duplicate fields
 or out-of-range workgroupSize.
@@ -689,7 +704,10 @@ it. Measured 8.5× over brute force, ~O(N).
 | .cellStart | Buffer (readonly) | first ordered slot per cell |
 | .cellFill | Buffer (readonly) | end slot per cell (fill cursor) |
 | .order | Buffer (readonly) | entity indices in cell order |
-| .update ( pos : Buffer ) : void | build the grid from positions (counts → scan → scatter) |
+| .prepare ( ) : Promise\<void\> — v2.0 | idempotent setup (resolves the internal scan primitive) |
+| .encode ( encoder : GPUCommandEncoder, pos : Buffer ) : void — v2.0 | write counts → scan → post → scatter into **your** encoder without submitting (compose with your force kernels in one chain) |
+| .update ( pos : Buffer ) : void | convenience = internal encoder + submit |
+| .endSubmit ( ) : void — v2.0 | re-arm the internal scan's encode-once guard after your own submit |
 | .destroy ( ) : void | release |
 
 ### Code Example
@@ -701,6 +719,35 @@ const grid = await createNeighborGrid({ count: 100_000, worldHalf: 1.0, cellSize
 // each frame: build the grid, then read cellStart/cellFill/order in your force kernel
 grid.update(posBuffer);
 ```
+
+---
+
+# wgpu-kit · createScan / createReduce
+
+Verified parallel primitives (v2.0): u32 prefix scan (dual-tier: single
+workgroup ≤65536, three-pass pipeline above — every path bitwise-checked
+against a CPU reference) and u32 reduction (`sumInto` keeps the result on the
+GPU; `sum` is the readback convenience). Both follow the same encode-once
+contract as kernels — encode once per submit, `endSubmit()` re-arms.
+
+```ts
+import { createScan, createReduce } from 'wgpu-kit';
+
+const scan = createScan();
+await scan.prepare();
+const src = await Buffer.create('u32', 100_000);
+const dst = await Buffer.create('u32', 100_000);
+scan.run(src, dst, 100_000, true);            // exclusive prefix sum
+const total = src.slice ? (await dst.read()) : null;
+
+const reduce = createReduce();
+await reduce.prepare();
+const sum = await reduce.sum(src, 100_000);   // convenience readback
+```
+
+Dispatch limits follow the WebGPU spec: block count ≤ 65535
+(`scan`), count ≤ 8192 × 65535 (`reduce`) — validated with clear
+`UsageError`s.
 
 ---
 
