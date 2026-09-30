@@ -1,15 +1,15 @@
 # wgpu-kit API 参考
 
 > 浏览器 GPGPU 中间层。本页是全部公开接口的参考文档,风格对齐 three.js docs。
-> 版本:v0.9.10 · 需 WebGPU(Chrome/Edge 113+、Safari 18+)· 零运行时依赖
+> 版本:v2.0 · 需 WebGPU(Chrome/Edge 113+、Safari 18+)· 零运行时依赖
 
 **入口总览**
 
 | 入口 | 内容 |
 | --- | --- |
-| [wgpu-kit](#wgpu-kit--kernel-核心) | GpuContext · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · 错误类 |
+| [wgpu-kit](#wgpu-kit--kernel-核心) | GpuContext(含 adopt)· Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · createScan · createReduce · 错误类 |
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | 粒子生命模拟 |
-| [wgpu-kit/grid](#wgpu-kitgrid--通用空间邻域) | 通用空间邻域(计数排序哈希) |
+| [wgpu-kit/grid](#wgpu-kitgrid--通用空间邻域) | 通用空间邻域(计数排序哈希;v2.0 编码合同) |
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
 | [wgpu-kit/three](#wgpu-kitthree--threepoints) | three.js 互通 |
 | [wgpu-kit/media](#wgpu-kitmedia--canvasrecorder) | 画布录制 |
@@ -726,3 +726,36 @@ console.log(`GPU: ${ms.toFixed(2)} ms/frame`);
 ##### resizeCanvas ( canvas, dprCap? = 2 ) : boolean
 
 按 DPR 上限调整画布尺寸;返回是否实际改变。
+
+---
+
+# wgpu-kit · createScan / createReduce
+
+v2.0 已验证并行原语:u32 前缀和 `scan`(双档——≤65536 单 workgroup 分块,
+之上三级流水;每条路径都对 CPU 参考**位一致**)与 u32 归约 `reduce`
+(`sumInto` 结果常驻 GPU 供后续 kernel 消费;`sum` 为读回便捷路径)。两者
+与 kernel 一致遵守 encode-once 合同——一次提交前只能 encode 一次,
+`endSubmit()` 重置。
+
+```ts
+import { Buffer, createScan, createReduce } from 'wgpu-kit';
+
+const scan = createScan();
+await scan.prepare();
+const src = await Buffer.create('u32', 100_000);
+const dst = await Buffer.create('u32', 100_000);
+src.write(new Uint32Array(100_000).map((_, i) => i));
+await scan.run(src, dst, 100_000, true);      // 排他前缀和
+const prefix = (await dst.read()) as Uint32Array;
+prefix[3]; // = 0+1+2 = 3
+
+const reduce = createReduce();
+await reduce.prepare();
+const sum = await reduce.sum(src, 100_000);   // 便捷读回(Σ)
+```
+
+dispatch 上限遵循 WebGPU 规范,超限在入口即抛清晰 `UsageError`:
+块数 ≤ 65535(`scan`,即 count ≤ 8192 × 65535)、count ≤ 8192 × 65535
+(`reduce`)。
+
+---
