@@ -46,10 +46,11 @@ let totalCore = 0;
 for (const { file, path } of sizes.sort((a, b) => a.file.localeCompare(b.file))) {
   const gz = gzipSync(readFileSync(path)).length / 1024;
   console.log(`  ${file}: ${gz.toFixed(2)} kB gzip`);
-  if ((file === 'index.js' || file.startsWith('core/') || file === 'layout.js' || file === 'errors.js') && file !== 'observe.js') totalCore += gz;
+  // 公共面 = 入口 + core/ + primitives/(P2-2:公开导出必须受预算约束)
+  if ((file === 'index.js' || file.startsWith('core/') || file.startsWith('primitives/')) && file !== 'observe.js') totalCore += gz;
 }
-console.log(`  → core 合计: ${totalCore.toFixed(2)} kB gzip(预算 <17)`);
-if (totalCore > 17) { console.error('  ✗ core 超预算'); fail = true; }
+console.log(`  → core+primitives 合计: ${totalCore.toFixed(2)} kB gzip(预算 <27)`);
+if (totalCore > 27) { console.error('  ✗ core+primitives 超预算'); fail = true; }
 
 // 结构断言:全库必须共享唯一 context 模块(多设备问题的结构性防线)
 const contextFiles = readdirSync(join(DIST, 'core')).filter((f) => f === 'context.js').length;

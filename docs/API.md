@@ -1,18 +1,15 @@
 # wgpu-kit API Reference
 
 > Browser GPGPU middle layer. Works in any WebGPU browser (Chrome/Edge 113+, Safari 18+). Zero runtime dependencies.
-> Version: v0.9.10 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
+> Version: v2.0 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
 
 **Entry points**
 
 | Import | Contents |
 | --- | --- |
-| [wgpu-kit](#wgpu-kit--kernel-core) | GpuContext · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · errors |
+| [wgpu-kit](#wgpu-kit--kernel-core) | GpuContext (incl. adopt) · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · createScan · createReduce · errors |
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | particle-life simulation with GPU rendering |
-| [wgpu-kit/life](#wgpu-kitlife--artificial-life) | Turing patterns · Physarum · Boids · soft tentacles |
-| [wgpu-kit/fields](#wgpu-kitfields--flow) | vector-field advection trails |
-| [wgpu-kit/grid](#wgpu-kitgrid--generic-spatial-neighborhood) | generic spatial neighborhood (counting-sort hash) |
-| [wgpu-kit/image](#wgpu-kitimage--applyimage) | GPU filter pipeline |
+| [wgpu-kit/grid](#wgpu-kitgrid--generic-spatial-neighborhood) | generic spatial neighborhood (counting-sort hash, v2.0 encoding contract) |
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
 | [wgpu-kit/three](#wgpu-kitthree--threepoints) | three.js interop |
 | [wgpu-kit/media](#wgpu-kitmedia--canvasrecorder) | canvas recording |
@@ -33,6 +30,13 @@ and requests the adapter's maximum storage-buffer limits automatically.
 
 Returns the global singleton, creating it on first call. Failures clear the
 cached promise so the environment can be retried after a fix.
+
+##### GpuContext.adopt ( device : GPUDevice ) : GpuContext — v2.0
+
+Wrap a **caller-owned** device (TypeGPU interop bridge: pass
+`tgpu.init()`'s device here). The library singleton and every `Buffer.create`
+then run on the adopted device. Must be called **before** the first `get()` —
+adopting mid-run throws.
 
 ### Properties
 
@@ -164,7 +168,7 @@ await integrate.replace(`
 | name | string | Debug label (appears in errors) | `'kernel'` |
 | state | Record\<string, ScalarKind\> | Read-**write** buffers | `{}` |
 | inputs | Record\<string, ScalarKind\> | **Read-only** buffers | `{}` |
-| uniforms | Record\<string, ScalarKind\> | Uniform scalars (f32/i32/u32 only) | `{}` |
+| uniforms | Record\<string, ScalarKind\> | Uniform fields — declared as `ScalarKind` (f32/i32/u32/vec2f/…); the **values** passed at run/encode time are `UniformValue` (scalars or `{x,y,z?,w?}`) | `{}` |
 | workgroupSize | number | Workgroup size, range 1..512 | `64` |
 | code | string | User WGSL function, **must be named `userFn`** | required |
 
@@ -176,6 +180,14 @@ await integrate.replace(`
 4. `state`/`inputs` field names are arrays inside the function — index them directly;
 5. `count` is a reserved name (injected automatically from the first resource);
 6. Field names across state/inputs/uniforms must not repeat.
+
+**Lexical-analysis boundary (known limitation):** resource usage is detected
+after stripping comments, `struct` declarations, member accesses (`.field`)
+and non-reachable helpers. A `let` local variable that **shadows** a resource
+name (`let ghost = 2.0;` while a `ghost` buffer is declared) still counts as a
+use — the buffer joins the bind group and the dispatch may be rejected. Rename
+the local to avoid it (a true WGSL parser is out of scope; see the
+honest-boundary note under `defineSchema`).
 
 Throws `UsageError` on invalid descriptors, reserved names, duplicate fields
 or out-of-range workgroupSize.
@@ -193,15 +205,38 @@ or out-of-range workgroupSize.
 
 ##### .run ( resources, uniforms? ) : Promise\<void\>
 
-Dispatch one step.
+Dispatch one step (convenience = `prepare` + `encode` + internal submit).
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | resources | Record\<string, Buffer\> | Every state/inputs field mapped to a Buffer |
-| uniforms | Record\<string, number\> | Uniform values matching the declaration |
+| uniforms | Record\<string, UniformValue\> | Uniform values matching the declaration (scalars or `{x,y,z?,w?}` vectors) |
 
 Throws `UsageError` (missing resource / type mismatch / length mismatch) or
 `CompileError` (WGSL failure — **line numbers map back into your `code`**).
+
+##### .prepare ( ) : Promise\<void\> — v2.0
+
+Idempotent async setup: resolve context, compile pipeline, allocate internal
+resources. Must complete before `encode`.
+
+##### .encode ( encoder, resources, uniforms? ) : void — v2.0
+
+Synchronous encoding: write this dispatch into **your** command encoder without
+submitting. Compose multiple kernels into one command chain, submit when you
+decide. **encode-once-per-submit contract**: the instance shares one uniform
+snapshot buffer — encoding the same instance twice before a submit overwrites
+the first snapshot and is rejected with `UsageError`. After your submit, call
+`.endSubmit()` to re-arm (or use one kernel instance per concurrent encode;
+`.resetEncodeGuard()` opts out entirely).
+
+##### .endSubmit ( ) : void — v2.0
+
+Re-arm the encode-once guard after your own submit of a composed encoder.
+
+##### .resetEncodeGuard ( ) : void — v2.0
+
+Advanced: disable the encode-once guard (you own the overwrite semantics).
 
 ##### .replace ( code : string ) : Promise\<void\>
 
@@ -379,7 +414,7 @@ const orbit = definePack({
   }),
 });
 registerPack(orbit);
-listPacks(); // includes 'particles', 'fields', 'orbit'
+listPacks(); // includes 'particles', 'orbit'
 ```
 
 ---
@@ -478,143 +513,6 @@ Current-frame buffers (`Buffer` instances — read them or hand to three.js).
 ##### .destroy ( ) : void
 
 Releases everything. The sim is unusable afterwards.
-
----
-
-# wgpu-kit/life · artificial life
-
-Four standalone emergence simulations with the same shape:
-`attach(canvas)` / `tick()` / `stats()` / `destroy()`.
-
-## turing ( config? ) : Promise\<TuringSim\>
-
-Gray-Scott reaction-diffusion: two chemicals grow coral / cell / wave patterns.
-
-| config | type | description | default |
-| --- | --- | --- | --- |
-| size | number | Grid edge (square) | `512` |
-| preset | 'coral' \| 'mitosis' \| 'spots' \| 'waves' \| 'custom' | Parameter preset | `'coral'` |
-| feed / kill | number | Custom f/k (when preset = custom) | per preset |
-| steps | number | Iterations per frame | `12` |
-| colormap | string | 'duotone' (default) \| 'amber' \| 'ice' \| 'mono' | — |
-| seed | string \| number | Seed for initial spots | `'life'` |
-
-| Extra method | description |
-| --- | --- |
-| .sprinkle ( count? = 6 ) | Sprinkle perturbation at random spots |
-| .sampleB ( ) : Promise\<Float32Array\> | Read back the B concentration field |
-
-Preset parameters: `coral` f=0.0545 k=0.062 · `mitosis` f=0.0367 k=0.0649 ·
-`spots` f=0.03 k=0.062 · `waves` f=0.014 k=0.045.
-
-## physarum ( config? ) : Promise\<PhysarumSim\>
-
-Physarum slime mold: three-sensor agents sense, turn, move, deposit; the trail
-diffuses and decays — networks emerge on their own.
-
-| config | type | description | default |
-| --- | --- | --- | --- |
-| agents | number | Agent count | `100_000` |
-| mapSize | number | Trail map edge | `1024` |
-| sensorAngle / sensorDist / turnAngle / step | number | Sensing & motion | 0.5 / 0.012 / 0.45 / 0.003 |
-| decay | number | Per-frame decay | `0.06` |
-| colormap | string | default 'amber' | — |
-
-Extra method: `sampleTrail()`.
-
-## boids ( config? ) : Promise\<BoidsSim\>
-
-Boids flocking: separation / alignment / cohesion over a counting-sort grid.
-
-| config | type | description | default |
-| --- | --- | --- | --- |
-| count | number | Individuals | `3000` |
-| perception | number | Perception radius | `0.05` |
-| maxSpeed | number | Max speed | `0.012` |
-| wSep / wAli / wCoh | number | Separation / alignment / cohesion weights | 1.6 / 1.0 / 0.8 |
-| size | number | Triangle size | `0.009` |
-
-Extra method: `buffers(): { pos, vel }`.
-
-## tentacles ( config? ) : Promise\<TentaclesSim\>
-
-Soft tentacles: Verlet chains anchored on golden-angle drifting anchors, with
-gravity and damping for a jellyfish-like drift.
-
-| config | type | description | default |
-| --- | --- | --- | --- |
-| chains / segments | number | Chains / nodes per chain | 48 / 64 |
-| segLen / gravity / damping | number | Node spacing / gravity / damping | 0.018 / 0.00035 / 0.985 |
-| iterations | number | Constraint relaxation passes per frame | `10` |
-| thickness / colorCycle | number | Dot size base / hue cycle speed | 0.006 / 0.35 |
-
----
-
-# wgpu-kit/fields · flow
-
-Vector-field advection trails: particles are advected through an analytic
-field and deposit a fading trail — a base layer for wind/flow visualization.
-
-## Constructor
-
-##### flow ( config? : FlowConfig ) : Promise\<FlowSim\>
-
-| config | type | description | default |
-| --- | --- | --- | --- |
-| count | number | Advected particles | `131_072` |
-| mapSize | number | Trail map edge | `1024` |
-| field | 'vortex' \| 'curl' \| 'twin' | Field type: vortex / curl noise / twin vortices | `'curl'` |
-| speed | number | Per-frame step | `0.004` |
-| decay | number | Per-frame decay | `0.045` |
-| deposit | number | Deposit amount | `1.0` |
-| colormap | string | 'ice' (default) \| 'amber' \| 'duotone' \| 'mono' | — |
-| seed | string \| number | Seed | `'flow'` |
-
-### Methods
-
-Same shape as the other sims: `attach / tick / stats / sampleTrail / destroy`.
-
----
-
-# wgpu-kit/image · applyImage
-
-GPU filter pipeline: source → per-op ping-pong passes → target canvas.
-
-## Constructor
-
-##### applyImage ( source, target, ops ) : Promise\<ApplyImageResult\>
-
-| Parameter | type | description |
-| --- | --- | --- |
-| source | HTMLCanvasElement \| HTMLImageElement \| ImageBitmap | Input image |
-| target | HTMLCanvasElement | Output canvas (WebGPU backend) |
-| ops | ImageOp[] | Operator pipeline, executed in order |
-
-Returns `{ width, height, passes, readback(): Promise<Uint8Array> }` —
-`readback()` gives GPU-direct pixels (RGBA, rows aligned to 256B), usable in
-headless tests.
-
-### ImageOp table
-
-| op | params | description |
-| --- | --- | --- |
-| { op: 'grayscale' } | — | Grayscale (Rec.709 luma) |
-| { op: 'invert' } | — | Invert |
-| { op: 'edge', amount? } | amount default 1 | Sobel edge detect |
-| { op: 'blur', radius? } | radius 1..4, default 1 | Box blur |
-| { op: 'sharpen', amount? } | amount default 1 | 3×3 sharpen |
-| { op: 'brightness', value } | −1..1 | Brightness |
-| { op: 'contrast', value } | 0..2, 1 = unchanged | Contrast |
-
-### Code Example
-
-```ts
-const r = await applyImage(srcCanvas, outCanvas, [
-  { op: 'blur', radius: 2 },
-  { op: 'edge', amount: 1 },
-]);
-const px = await r.readback();
-```
 
 ---
 
@@ -806,7 +704,10 @@ it. Measured 8.5× over brute force, ~O(N).
 | .cellStart | Buffer (readonly) | first ordered slot per cell |
 | .cellFill | Buffer (readonly) | end slot per cell (fill cursor) |
 | .order | Buffer (readonly) | entity indices in cell order |
-| .update ( pos : Buffer ) : void | build the grid from positions (counts → scan → scatter) |
+| .prepare ( ) : Promise\<void\> — v2.0 | idempotent setup (resolves the internal scan primitive) |
+| .encode ( encoder : GPUCommandEncoder, pos : Buffer ) : void — v2.0 | write counts → scan → post → scatter into **your** encoder without submitting (compose with your force kernels in one chain) |
+| .update ( pos : Buffer ) : void | convenience = internal encoder + submit |
+| .endSubmit ( ) : void — v2.0 | re-arm the internal scan's encode-once guard after your own submit |
 | .destroy ( ) : void | release |
 
 ### Code Example
@@ -818,6 +719,37 @@ const grid = await createNeighborGrid({ count: 100_000, worldHalf: 1.0, cellSize
 // each frame: build the grid, then read cellStart/cellFill/order in your force kernel
 grid.update(posBuffer);
 ```
+
+---
+
+# wgpu-kit · createScan / createReduce
+
+Verified parallel primitives (v2.0): u32 prefix scan (dual-tier: single
+workgroup ≤65536, three-pass pipeline above — every path bitwise-checked
+against a CPU reference) and u32 reduction (`sumInto` keeps the result on the
+GPU; `sum` is the readback convenience). Both follow the same encode-once
+contract as kernels — encode once per submit, `endSubmit()` re-arms.
+
+```ts
+import { Buffer, createScan, createReduce } from 'wgpu-kit';
+
+const scan = createScan();
+await scan.prepare();
+const src = await Buffer.create('u32', 100_000);
+const dst = await Buffer.create('u32', 100_000);
+src.write(new Uint32Array(100_000).map((_, i) => i));
+await scan.run(src, dst, 100_000, true);      // exclusive prefix sum
+const prefix = (await dst.read()) as Uint32Array;
+prefix[3]; // = 0+1+2 = 3
+
+const reduce = createReduce();
+await reduce.prepare();
+const sum = await reduce.sum(src, 100_000);   // convenience readback (Σ)
+```
+
+Dispatch limits follow the WebGPU spec — validated up front with clear
+`UsageError`s: block count ≤ 65535 (`scan`, i.e. count ≤ 8192 × 65535) and
+count ≤ 8192 × 65535 (`reduce`).
 
 ---
 

@@ -194,6 +194,9 @@ function jsReference(particleIdx: number, frames: number): { x: number; y: numbe
 
 async function main() {
   const ctx = await GpuContext.get();
+  ctx.device.addEventListener?.('uncapturederror', (e: Event) => {
+    report('gpu-validation-error', false, String((e as GPUUncapturedErrorEvent).error?.message ?? e).slice(0, 250));
+  });
 
   {
     const sim = await particles({ ...CFG, mode: 'grid', maxNeighbors: 999999 });
