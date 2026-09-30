@@ -29,6 +29,12 @@
 
 获取(或创建)全局唯一上下文。失败时缓存被清除,修复环境后可重试。
 
+##### GpuContext.adopt ( device : GPUDevice ) : GpuContext —— v2.0
+
+接入调用方**自有**的 GPUDevice(TypeGPU 互操作桥:把 `tgpu.init()` 的设备
+递进来),此后全库单例与 `Buffer.create` 都运行于该设备。必须在首次
+`get()` **之前**调用——运行中 adopt 会抛错。
+
 ##### 实例属性
 
 | 属性 | 类型 | 说明 |
@@ -159,7 +165,7 @@ await integrate.replace(`
 | name | string | 调试名(错误信息中出现) | `'kernel'` |
 | state | Record\<string, ScalarKind\> | **读写**缓冲字段 | `{}` |
 | inputs | Record\<string, ScalarKind\> | **只读**缓冲字段 | `{}` |
-| uniforms | Record\<string, ScalarKind\> | uniform 标量(仅 f32/i32/u32) | `{}` |
+| uniforms | Record\<string, ScalarKind\> | uniform 字段类型(声明 ScalarKind;值支持 vec2/3/4 向量) | `{}` |
 | workgroupSize | number | workgroup 大小,1..512 | `64` |
 | code | string | 用户 WGSL 函数,**必须命名 `userFn`** | 必填 |
 
@@ -171,6 +177,12 @@ await integrate.replace(`
 4. `state`/`inputs` 字段名在函数体内即数组,直接 `name[idx]` 访问;
 5. `count` 是保留名(uniform 由库自动注入并做越界保护);
 6. state 与 inputs 的字段名不能重复。
+
+**词法分析边界(已知限制)**:资源使用检测会先剥离注释、`struct` 声明体、
+成员访问(`.字段`)与不可达 helper;但**遮蔽**资源名的局部变量
+(`let ghost = 2.0;` 同时声明了 ghost 缓冲)仍会计为"已使用"——该缓冲会
+进 bind group,dispatch 可能被拒绝。规避方式:重命名局部变量(真正的
+WGSL 解析器不在承诺范围内,见 defineSchema 的诚实边界)。
 
 抛出:`UsageError`(描述非法/保留名/重复字段/非法 workgroupSize)。
 
@@ -192,9 +204,24 @@ await integrate.replace(`
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | resources | Record\<string, Buffer\> | state/inputs 全部字段 → Buffer 映射 |
-| uniforms | Record\<string, number\> | uniform 标量值(须与声明一致) |
+| uniforms | Record\<string, UniformValue\> | uniform 值(标量或 {x,y,z?,w?} 向量,须与声明一致;v2.0 起支持向量) |
 
 抛出:`UsageError`(缺资源/类型不匹配/长度不一致)、`CompileError`(WGSL 编译失败,**行号映射回你的 code**)。
+
+##### .prepare ( ) : Promise\<void\> —— v2.0
+
+幂等异步准备:解析上下文、编译管线、分配内部资源。必须在 `encode` 前完成。
+
+##### .encode ( encoder : GPUCommandEncoder, resources, uniforms? ) : void —— v2.0
+
+同步编码:把 dispatch 写入**你的** encoder(不提交)。多个 kernel 可组成同
+一条计算链。**encode-once-per-submit 合同**:同一实例的共享 uniform 快照
+在一次提交前只能 encode 一次,重复会抛 `UsageError`;自定义 submit 后调用
+`.endSubmit()` 重置(`.resetEncodeGuard()` 可整体解除)。
+
+##### .endSubmit ( ) : void —— v2.0
+
+自定义 submit 流程完成后调用:重置 encode-once 检测。
 
 ##### .replace ( code : string ) : Promise\<void\>
 
@@ -650,7 +677,10 @@ hotKernel(k, import.meta.hot, './sim.wgsl');
 | .cellStart | Buffer (readonly) | 各格起始槽位 |
 | .cellFill | Buffer (readonly) | 各格结束槽位 |
 | .order | Buffer (readonly) | 按格子序排列的实体下标 |
-| .update ( pos : Buffer ) : void | 按位置建格(counts → scan → scatter) |
+| .prepare ( ) : Promise\<void\> —— v2.0 | 幂等准备(解析内部 scan 原语) |
+| .encode ( encoder : GPUCommandEncoder, pos : Buffer ) : void —— v2.0 | counts → scan → post → scatter 写入**你的** encoder(不提交;可与力 kernel 组成计算链) |
+| .update ( pos : Buffer ) : void | 便捷路径 = 内部 encoder + 提交 |
+| .endSubmit ( ) : void —— v2.0 | 自定义 submit 后重置内部 scan 的 encode-once 闸 |
 | .destroy ( ) : void | 释放 |
 
 ### 代码示例

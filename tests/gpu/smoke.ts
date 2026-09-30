@@ -352,6 +352,49 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     a.destroy();
   }
 
+  // T11d2 uniform 校验失败同样不锁 guard(第三轮 P2-1):缺 uniforms 重试
+  {
+    const out = await Buffer.create('f32', 8);
+    const k = elementKernel({
+      name: 'guard-uniform-retry',
+      state: { out: 'f32' },
+      uniforms: { scale: 'f32' },
+      code: 'fn userFn(idx: u32, scale: f32) { out[idx] = scale; }',
+    });
+    await k.prepare();
+    const enc = ctx.device.createCommandEncoder();
+    let firstThrew = false;
+    try {
+      k.encode(enc, { out }, {}); // 缺 scale → UNIFORM_FIELD
+    } catch (e) {
+      firstThrew = e instanceof UsageError;
+    }
+    k.encode(enc, { out }, { scale: 5 }); // guard 不得已打开,重试可行
+    ctx.device.queue.submit([enc.finish()]);
+    k.endSubmit();
+    const got = (await out.read()) as Float32Array;
+    report('encode-uniform-fail-no-lock', firstThrew && got[3] === 5, `首次抛错=${firstThrew} 重试生效 out[3]=${got[3]}(期 5)`);
+    out.destroy();
+  }
+
+  // T11f 局部变量遮蔽资源名(第三轮 P2-2,已知限制的规避路径探针):
+  // 重命名局部变量后内核正常工作——限制已文档化于 API.md code contract
+  {
+    const n = 16;
+    const out = await Buffer.create('f32', n);
+    const ghost = await Buffer.create('f32', n);
+    const k = elementKernel({
+      name: 'shadow-renamed',
+      state: { out: 'f32', ghost: 'f32' },
+      code: 'fn userFn(idx: u32) {\n  let g2 = 4.0;\n  out[idx] = g2;\n  ghost[idx] = 0.0;\n}',
+    });
+    await k.run({ out, ghost });
+    const got = (await out.read()) as Float32Array;
+    report('shadow-rename-workaround', got[3] === 4, `out[3]=${got[3]}(期 4;重命名局部变量后正常)`);
+    out.destroy();
+    ghost.destroy();
+  }
+
   // T11e 结构成员同名不误判(复审 P1-2):inputs 声明 ghost,
   // userFn 只访问 item.ghost(struct 成员)——ghost 全局资源不得进布局
   {

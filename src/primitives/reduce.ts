@@ -83,8 +83,6 @@ export function createReduce(): Reduce {
   let ctx: GpuContext | null = null;
   let pipelines: { pClear: GPUComputePipeline; pReduce: GPUComputePipeline } | null = null;
   let params: GPUBuffer | null = null;
-  let dstBuf: GPUBuffer | null = null;
-  let readBuf: GPUBuffer | null = null;
   // encode-once-per-submit 合同(复审 P1-1)
   let guardArmed = true;
   let guardOpen = false;
@@ -105,8 +103,6 @@ export function createReduce(): Reduce {
         pReduce: device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'reduce' } }),
       };
       params = device.createBuffer({ size: USIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: 'reduce-params' });
-      dstBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, label: 'reduce-dst' });
-      readBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ, label: 'reduce-read' });
     },
 
     sumInto(encoder: GPUCommandEncoder, src: GPUBuffer, count: number, dst: GPUBuffer): void {
@@ -155,14 +151,21 @@ export function createReduce(): Reduce {
     async sum(src: Buffer, count: number): Promise<number> {
       await this.prepare();
       const device = ctx!.device;
+      // 并发安全(外部审查第三轮 P1):每次调用私有 scratch——共享 readBuf 的
+      // 旧实现在并发 sum() 时 mapAsync 互撞("outstanding map pending"),
+      // 共享 dstBuf 更会让并发调用静默相加。私有 4B+4B 分配即换正确性。
+      const scratchDst = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, label: 'reduce-sum-dst' });
+      const scratchRead = device.createBuffer({ size: 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ, label: 'reduce-sum-read' });
       const enc = device.createCommandEncoder();
-      this.sumInto(enc, src.gpuBuffer, count, dstBuf!);
-      enc.copyBufferToBuffer(dstBuf!, 0, readBuf!, 0, 4);
+      this.sumInto(enc, src.gpuBuffer, count, scratchDst);
+      enc.copyBufferToBuffer(scratchDst, 0, scratchRead, 0, 4);
       device.queue.submit([enc.finish()]);
-      guardOpen = false;
-      await readBuf!.mapAsync(GPUMapMode.READ);
-      const v = new DataView(readBuf!.getMappedRange().slice(0)).getUint32(0, true);
-      readBuf!.unmap();
+      guardOpen = false; // 本次调用完成(私有 scratch,无共享闸可留)
+      await scratchRead.mapAsync(GPUMapMode.READ);
+      const v = new DataView(scratchRead.getMappedRange().slice(0)).getUint32(0, true);
+      scratchRead.unmap();
+      scratchDst.destroy();
+      scratchRead.destroy();
       return v;
     },
 
@@ -176,9 +179,6 @@ export function createReduce(): Reduce {
 
     destroy(): void {
       params?.destroy();
-      dstBuf?.destroy();
-      readBuf?.destroy();
-      params = dstBuf = readBuf = null;
       pipelines = null;
       guardOpen = false;
     },

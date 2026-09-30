@@ -335,10 +335,11 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
         }
         ordered.push(buf);
       }
-      if (encodeGuardArmed) encodeGuardOpen = true;
-
       // —— uniform 打包上传 ——
+      // guard 在资源与 uniform 校验**全部通过后**才打开(复审 P2-1:打包抛错
+      // 时若已开闸,同一实例的重试会被误拒)
       packUniformInto(sharedPack, uniformLayout, { ...uniforms, count });
+      if (encodeGuardArmed) encodeGuardOpen = true;
       if (!uniformBuffer) {
         uniformBuffer = device.createBuffer({
           size: uniformLayout.size,

@@ -138,6 +138,24 @@ async function main() {
     srcBuf.destroy();
   }
 
+  // —— reduce 并发 sum(第三轮 P1):私有 scratch 使并发调用互不干扰 ——
+  {
+    const a = makeSrc(4000, 'random');
+    const b = makeSrc(3000, 'random');
+    const bufA = await Buffer.create('u32', 4000);
+    const bufB = await Buffer.create('u32', 3000);
+    bufA.write(a);
+    bufB.write(b);
+    let wantA = 0;
+    let wantB = 0;
+    for (let i = 0; i < 4000; i++) wantA = (wantA + a[i]!) >>> 0;
+    for (let i = 0; i < 3000; i++) wantB = (wantB + b[i]!) >>> 0;
+    const [gotA, gotB] = await Promise.all([reduce.sum(bufA, 4000), reduce.sum(bufB, 3000)]);
+    report('reduce 并发 sum', gotA === wantA && gotB === wantB, `gotA=${gotA}(期 ${wantA}) gotB=${gotB}(期 ${wantB})`);
+    bufA.destroy();
+    bufB.destroy();
+  }
+
   // —— encode-once-per-submit 合同(复审 P1-1):提交前重复 encode 必须拒绝 ——
   {
     const n = 8;
