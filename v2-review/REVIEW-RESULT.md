@@ -1,73 +1,55 @@
-# v2 第三轮独立审查结果
+# wgpu-kit v2 独立复审结果
 
-## 审查基线与范围
+**复审日期：** 2026-09-30
 
-- 基线：分支 `v2`，HEAD `4aef96a`；审查当前 `git diff main..v2` 和工作树源文件。
-- 本报告未读取或依赖旧的 `v2-review/REVIEW-RESULT.md` 作为证据；主要依据是当前代码、实际 diff、委托书、重构计划、变更清单及本轮验证结果。
-- 没有改动产品源代码。临时 GPU 探针在复现后已删除；最终工作树仅新增本报告。
+**复审基线：** `v2` HEAD `aeebe6e`，对照 `main`；本次按当前源码、测试、计划和委托书重新检查。`v2-review/REVIEW-RESULT.md` 旧内容没有作为评审依据。
+**总评：** 0 个 P0、0 个 P1、3 个 P2。当前结论为 **FAIL / 建议修复后再复审**：原语 dispatch 边界没有兑现 API 所声称的 `UsageError` 合同；另外有资源错误路径清理和公开示例问题。
 
 ## 发现
 
-### [P1] 同一 Reduce 实例并发 `sum()` 会争用 readback buffer
+### [P2] scan/reduce 的 workgroup 上限未在运行时校验
 
-证据：`src/primitives/reduce.ts:86-87,155-165`。每个实例只创建一个 `dstBuf` 和一个 `readBuf`，每次 `sum()` 都复用它们；提交后立即对共享 `readBuf` 调用 `mapAsync()`。同一实例并发调用时，两个 map/readback 生命周期重叠。
+- `src/primitives/scan.ts:255-256` 的 scan 输入上限为 `SEGMENT * BLOCK_COUNT_CAP`，其中 `BLOCK_COUNT_CAP = 65536`；但 `blockCount = ceil(count / SEGMENT)` 在第 281 行计算后，第 325、337 行直接按 `blockCount` dispatch。输入 `8192 × 65535 + 1` 已产生 **65536** 个 workgroup，超过 WebGPU `maxComputeWorkgroupsPerDimension` 的 65535 上限。
+- `src/primitives/reduce.ts:117-126,147` 只验证 count 是非负整数，没有限制 `ceil(count / 8192)`；同样的边界输入会 dispatch 65536 个 workgroup。
+- `docs/API.md:748-750` 声称两个上限会以明确的 `UsageError` 校验。当前实现既没有对应的拒绝，也没有该错误合同；超限输入进入 WebGPU dispatch 验证路径。
+- 临时 mock GPU 探针确认 scan 和 reduce 都能编码出 `dispatchWorkgroups(65536)`。探针文件已删除。
+- 建议在发命令前分别校验 `blockCount/workgroups <= 65535`，越界抛 `UsageError`；补测 `65535` / `65536` 个 workgroup 的 accept/reject 边界，并同步文档。
 
-复现：先 `await r.prepare()`，再执行 `Promise.all([r.sum(a, 4), r.sum(b, 1)])`。本机 Edge/NVIDIA 实测第一项返回 `4`，第二项以 `Buffer already has an outstanding map pending` 拒绝。`sum()` 没有声明需串行调用，且这是便利 API 的常见并发用法，当前实现不能满足该调用方式。
+参考：[WebGPU limits](https://www.w3.org/TR/2026/CRD-webgpu-20260512/#limits)。
 
-建议：为每次读回分配独立 scratch/readback，或串行化 `sum()`；若选择不支持并发，也应在提交前明确拒绝，而不是让 WebGPU map 失败。
+### [P2] `reduce.sum()` 在失败路径不销毁私有 scratch buffer
 
-### [P2] uniform 校验失败会把 kernel encode guard 留在打开状态
+- `src/primitives/reduce.ts:157-160` 先分配 `scratchDst`、`scratchRead`，再调用 `sumInto()`；非法 count 会在第 117 行抛错。
+- 两个 buffer 只在 `mapAsync()` 成功、读回完成后才于第 167-168 行销毁。`sumInto()` 校验拒绝、encoder/submit 失败或 `mapAsync()` 拒绝时没有 `finally` 清理。
+- 临时 mock GPU 探针传入 `count = -1`，确认 `sum()` 正确拒绝，但两个新建 scratch buffer 的 `destroyed` 仍为 `false`。临时探针文件已删除。
+- 建议用 `try/finally` 管理两块临时 buffer，并在 map 状态允许时执行必要的 `unmap()`。
 
-证据：`src/core/kernel.ts:338-341`。资源检查结束后先设置 `encodeGuardOpen = true`，随后 `packUniformInto()` 才检查缺失或非法 uniform。打包抛出 `UsageError` 时 guard 没有回滚；用户修正值后在同一实例上重试，会错误地收到“called twice before submit”。`run()` 也经过此路径。
+### [P2] 英文 API 的 scan 示例无法按示例运行
 
-复现：`encode()` 首次缺少必需的 `dt`，捕获 `Missing uniform value for "dt"`；随后以 `{ dt: 9 }` 重试，仍被 encode-once guard 拒绝。当前 `tests/gpu/smoke.ts:331-350` 只覆盖缺资源后重试，未覆盖 uniform 打包失败。
+- `docs/API.md:734` 只导入 `createScan`、`createReduce`，但第 738-739 行使用未导入的 `Buffer.create`。
+- 第 740 行没有 `await scan.run(...)`；第 741 行用 `src.slice` 判断读回，但 `Buffer` API 没有 `slice`，所以 `total` 恒为 `null`，示例也没有展示预期的 scan 结果。
+- 建议补上 `Buffer` 导入、等待 `scan.run()`，并直接读取/断言 `dst` 中的前缀和；删除无效的 `src.slice` 条件。
 
-建议：uniform 验证成功后再打开 guard，并确保后续同步编码异常不会留下错误状态。
+## 审查区结论
 
-### [P2] 静态绑定分析把同名局部变量误判为全局资源引用
+| 区域 | 结论 | 依据摘要 |
+|---|---|---|
+| ① `primitives/scan.ts` WGSL / 双档边界 / 静态绑定 | **FAIL** | GPU 探针覆盖的 65535/65536/65537 元素档位、70000 多档、exclusive/inclusive、重复执行均正确；但 dispatch workgroup 数 65536 的极限未拦截，reduce 同样缺限制。 |
+| ② `core/kernel.ts` prepare/encode/run | **PASS-with-notes** | prepare 前 encode 检查、uniform 打包失败后重试、提交后 guard 复位通过。局部变量遮蔽资源名的词法分析限制仍存在，英文/中文 API 已明确记载并给出重命名规避方式（`docs/API.md:186`、`docs/API.zh-CN.md:182-184`）。 |
+| ③ particles scan 迁移与渲染相位 | **PASS** | tick 顺序为 counts → scan 独立 pass → post → scatter → force；提交后调用 `endSubmit()`；渲染使用 swap 前 `pp.other`。当前 ngrid 与 grid-debug GPU 探针通过。 |
+| ④ 删除完整性 | **PASS** | 在 `src`、`playground`、`tests`、包配置及面向用户文档中搜索委托书列出的死引用模式，无残留匹配；对应 life/fields/image 目录和页面未发现。 |
+| ⑤ 注册表静态化 | **PASS** | 根入口静态合成内置包、拒绝注册保留名，单测覆盖重复名、内置名和 `getPack`；`sideEffects: false` 不再依赖顶层 `registerPack()`。 |
+| ⑥ `timeGpu` | **PASS-with-notes** | ts0 独立提交 → 等待 `fn(ctx)` → ts1/resolve/readback 提交的队列顺序正确。运行时 timestamp-query 数值仍无法在本机验证，属于委托书 §5 已列缺口，不作为新发现。 |
 
-证据：`src/core/kernel.ts:159-167` 仅在可达函数体中按标识符词法匹配，没有解析局部作用域；命中后 `src/core/kernel.ts:361-364` 会把相应资源加入 bind group。若 WGSL 中写 `let ghost = 2.0;`，而 kernel 同时声明全局资源 `ghost`，分析器会把局部变量当成全局资源使用；但 `layout: 'auto'` 的入口点布局不包含该未使用全局资源，额外绑定会使命令缓冲无效。本机 GPU 探针以 `state: { out: 'f32', ghost: 'f32' }` 和局部 `let ghost` 复现，输出未执行且提交报错。
-
-实现注释 `src/core/kernel.ts:115-116` 已承认词法边界，但仓库文档没有找到对应的用户侧限制说明。另，现有结构体成员探针 `tests/gpu/smoke.ts:355-368` 同时执行 `ghost[idx] = 0.0`，因此全局 `ghost` 确实被引用，不能单独证明 `item.ghost` 不会误判。
-
-建议：改用能区分标识符作用域的 WGSL 分析；短期可增加局部变量同名回归探针，并明确记录限制。
-
-### [P2] scan/reduce 的可接受长度与 WebGPU dispatch 上限不一致
-
-证据：`src/primitives/scan.ts:171,255-256,281,325,337` 将 block 数上限设为 `65536`，并允许 `count = 8192 × 65536 = 536,870,912`；这会向 `dispatchWorkgroups()` 传入 `65536`。WebGPU 的 `maxComputeWorkgroupsPerDimension` 上限为 `65535`（[WebGPU limits](https://www.w3.org/TR/2026/CRD-webgpu-20260512/)），因此该公开支持上限会触发 dispatch 验证错误。`src/primitives/reduce.ts:130,151` 也没有限制 workgroup 数，超出 `65535 × 8192` 的有效 count 会派发超过该上限的 workgroup。
-
-建议：将允许的 block 数限制为不超过 `65535` 并在 scan/reduce API 层提前校验，或采用二维 dispatch/分批策略。
-
-### [P2] v2 新 API 与向量 uniform 文档未同步
-
-证据：
-
-- `src/index.ts:12-13` 已导出 `createScan` / `createReduce`，但 `docs/API.md` 和 `docs/API.zh-CN.md` 没有对应 API 章节；`src/core/context.ts:43-58` 新增 `GpuContext.adopt()`，API 文档也未说明它必须早于首次 `get()` 调用。
-- `src/packs/grid/index.ts:42-52` 为 `NeighborGrid` 新增 `prepare()`、`encode()`、`endSubmit()`；英文与中文 API 文档的成员表仍只列 `update()` 和 `destroy()`（`docs/API.md:683-703`、`docs/API.zh-CN.md:644-663`）。
-- `docs/API.md:164` 把 kernel spec 的 `uniforms` 声明类型写成运行时值 `UniformValue`；实际 spec 类型是 `Record<string, ScalarKind>`（`src/core/kernel.ts:17-27`）。中文文档仍描述标量-only（`docs/API.zh-CN.md:162,188-195`），但运行时和类型已支持向量 uniform（`src/core/layout.ts:81-105`）。
-
-建议：同步中英文 API 文档，分别写清声明的 `ScalarKind` 与调用时的 `UniformValue`，并补齐 primitives、device adoption 和 grid 编码合同。
-
-## 验证结果
+## 本次验证
 
 - `npm run typecheck`：通过。
-- `npm test`：4 个文件、29/29 通过。
-- `npm run bundle:tests`：通过。
-- 本机 Edge/NVIDIA WebGPU：`smoke` 22/22、`primitives` 29/29、`ngrid` 6/6、`grid-debug` 19/19，合计 76/76 通过。
-- 本轮临时 GPU 探针额外复现了上述 Reduce 并发、uniform guard 重试、局部变量遮蔽三条路径；探针文件已清理。
-- CI 未运行、当前设备不支持 timestamp-query、Phase F 延后，均是委托书 §5 已列的验证缺口，不作为新发现。
+- `npm test`：4 个测试文件、29/29 通过。
+- 当前 HEAD 的本地真机 GPU 验证：smoke 24/24、primitives 30/30、ngrid 6/6、grid-debug 19/19，共 79/79 通过。并发 reduce sum 与 uniform 校验失败后重试均有专项探针。
+- dispatch 极限及失败路径 scratch 清理：用临时 mock GPU 探针检查；观察到上述问题后已删除 `tests/review-temp.test.ts`。
+- 死引用搜索：无匹配；工作树中的临时探针已清理。
+- CI 未运行、timeGpu 缺少 timestamp-query 真机数值、Phase F 延后：均为委托书 §5 的已知缺口，不作为本轮发现。
 
-## 各审查区结论
+## 结论
 
-| 审查区 | 结论 | 说明 |
-| --- | --- | --- |
-| ① primitives / scan WGSL | **FAIL** | 常测档位与多档输出通过；P1 Reduce 并发读回缺陷，以及 P2 dispatch 上限边界待处理。 |
-| ② kernel prepare / encode / run | **FAIL** | P2 uniform 校验失败锁 guard；P2 局部变量遮蔽造成静态绑定误判。 |
-| ③ particles scan 迁移与渲染相位 | **PASS** | ngrid 与 grid-debug GPU 探针全通过，未发现迁移或相位回归。 |
-| ④ 删除完整性 | **PASS** | 全库搜索未发现已删除包的存活代码/配置引用；命中仅为计划、委托书中的历史说明。 |
-| ⑤ 注册表静态化 | **PASS** | vitest 覆盖内置名防覆盖与单份枚举，当前通过。 |
-| ⑥ timeGpu | **PASS-with-notes** | 三段队列提交顺序经代码审查；运行时 timestamp 数值缺测属于委托书 §5 已知缺口。 |
-
-## 总结
-
-**总体结论：暂不通过。** 没有 P0；有 1 条 P1 与 4 条 P2。建议先修复 Reduce 并发读回，再处理 encode guard、局部作用域绑定分析与 dispatch 上限，并同步 API 文档后复审。
+scan/reduce 的常规数据正确性和本轮并发修复通过；kernel 编码合同、particles 迁移、注册表与删除检查也通过或带说明通过。由于原语的设备 dispatch 上限和文档承诺不一致，且存在失败路径资源清理与不可运行的公共示例，本次评审结论为 **FAIL（3 个 P2 待处理）**。未修改产品代码、未推送、未发布。

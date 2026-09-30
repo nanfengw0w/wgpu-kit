@@ -116,6 +116,11 @@ export function createReduce(): Reduce {
       if (!Number.isInteger(count) || count < 0) {
         throw new UsageError(ERR.USAGE, `reduce count must be a non-negative integer, got ${String(count)}`);
       }
+      // WebGPU maxComputeWorkgroupsPerDimension = 65535(第四轮审查 P2):
+      // workgroups = ceil(count / 8192) 不得超过该限制
+      if (count > WG * ITEMS * 65535) {
+        throw new UsageError(ERR.USAGE, `reduce count ${count} exceeds supported cap ${WG * ITEMS * 65535} (workgroup dispatch limit)`);
+      }
       if (guardArmed) guardOpen = true;
       const device = ctx.device;
       const b = new ArrayBuffer(USIZE);
@@ -151,22 +156,26 @@ export function createReduce(): Reduce {
     async sum(src: Buffer, count: number): Promise<number> {
       await this.prepare();
       const device = ctx!.device;
-      // 并发安全(外部审查第三轮 P1):每次调用私有 scratch——共享 readBuf 的
-      // 旧实现在并发 sum() 时 mapAsync 互撞("outstanding map pending"),
-      // 共享 dstBuf 更会让并发调用静默相加。私有 4B+4B 分配即换正确性。
+      // 并发安全(第三轮 P1):每次调用私有 scratch——共享 readBuf 的旧实现
+      // 在并发 sum() 时 mapAsync 互撞,共享 dstBuf 更会让并发结果静默相加。
+      // [第四轮 P2] scratch 用 try/finally 管理:任何失败路径(校验拒绝/
+      // 提交失败/mapAsync 拒绝)都不泄漏 GPU 缓冲。
       const scratchDst = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, label: 'reduce-sum-dst' });
       const scratchRead = device.createBuffer({ size: 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ, label: 'reduce-sum-read' });
-      const enc = device.createCommandEncoder();
-      this.sumInto(enc, src.gpuBuffer, count, scratchDst);
-      enc.copyBufferToBuffer(scratchDst, 0, scratchRead, 0, 4);
-      device.queue.submit([enc.finish()]);
-      guardOpen = false; // 本次调用完成(私有 scratch,无共享闸可留)
-      await scratchRead.mapAsync(GPUMapMode.READ);
-      const v = new DataView(scratchRead.getMappedRange().slice(0)).getUint32(0, true);
-      scratchRead.unmap();
-      scratchDst.destroy();
-      scratchRead.destroy();
-      return v;
+      try {
+        const enc = device.createCommandEncoder();
+        this.sumInto(enc, src.gpuBuffer, count, scratchDst);
+        enc.copyBufferToBuffer(scratchDst, 0, scratchRead, 0, 4);
+        device.queue.submit([enc.finish()]);
+        guardOpen = false; // 本次调用完成(私有 scratch,无共享闸可留)
+        await scratchRead.mapAsync(GPUMapMode.READ);
+        const v = new DataView(scratchRead.getMappedRange().slice(0)).getUint32(0, true);
+        scratchRead.unmap();
+        return v;
+      } finally {
+        scratchDst.destroy();
+        scratchRead.destroy();
+      }
     },
 
     endSubmit(): void {

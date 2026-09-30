@@ -4,7 +4,7 @@
  * 覆盖历史返工点:空输入、非 2 幂、单 workgroup 容量边界(65536±1)、
  * 多档路径(70000)、重复执行残留、全零/全一模式。
  */
-import { createScan, createReduce, Buffer } from '../../src/index.ts';
+import { createScan, createReduce, Buffer, GpuContext } from '../../src/index.ts';
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
 (window as unknown as { __results: unknown }).__results = results;
@@ -200,6 +200,34 @@ async function main() {
     dstBuf.destroy();
     sumBuf.destroy();
     r.destroy();
+  }
+
+  // —— dispatch 上限(第四轮 P2):超限必须在 encode/sumInto 入口抛 UsageError,
+  // 而不是流进 dispatchWorkgroups 触发设备校验 ——
+  {
+    const OVER_SCAN = 8192 * 65535 + 1;  // blockCount = 65536 > maxComputeWorkgroupsPerDimension
+    const OVER_REDUCE = 8192 * 65535 + 1;
+    const tinySrc = await Buffer.create('u32', 1);
+    const tinyDst = await Buffer.create('u32', 1);
+    const enc = (await GpuContext.get()).device.createCommandEncoder();
+    let scanThrew = false;
+    try {
+      scan.encode(enc, tinySrc.gpuBuffer, tinyDst.gpuBuffer, OVER_SCAN, true);
+    } catch (e) {
+      scanThrew = (e as Error).name === 'UsageError';
+    }
+    const r2 = createReduce();
+    await r2.prepare();
+    let reduceThrew = false;
+    try {
+      r2.sumInto(enc, tinySrc.gpuBuffer, OVER_REDUCE, tinyDst.gpuBuffer);
+    } catch (e) {
+      reduceThrew = (e as Error).name === 'UsageError';
+    }
+    r2.destroy();
+    report('dispatch 上限拒绝', scanThrew && reduceThrew, `scan 超限拒绝=${scanThrew} reduce 超限拒绝=${reduceThrew}(count=${OVER_SCAN.toLocaleString()})`);
+    tinySrc.destroy();
+    tinyDst.destroy();
   }
 
   scan.destroy();
