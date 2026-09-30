@@ -745,9 +745,6 @@ prefix[3]; // = 0+1+2 = 3
 const reduce = createReduce();
 await reduce.prepare();
 const sum = await reduce.sum(src, 100_000);   // convenience readback (Σ)
-const reduce = createReduce();
-await reduce.prepare();
-const sum = await reduce.sum(src, 100_000);   // convenience readback (Σ)
 ```
 
 Dispatch limits follow the WebGPU spec — validated up front with clear
