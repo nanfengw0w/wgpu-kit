@@ -1,15 +1,15 @@
 # wgpu-kit API Reference
 
 > Browser GPGPU middle layer. Works in any WebGPU browser (Chrome/Edge 113+, Safari 18+). Zero runtime dependencies.
-> Version: v0.9.10 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
+> Version: v2.0 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
 
 **Entry points**
 
 | Import | Contents |
 | --- | --- |
-| [wgpu-kit](#wgpu-kit--kernel-core) | GpuContext · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · errors |
+| [wgpu-kit](#wgpu-kit--kernel-core) | GpuContext (incl. adopt) · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · createScan · createReduce · errors |
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | particle-life simulation with GPU rendering |
-| [wgpu-kit/grid](#wgpu-kitgrid--generic-spatial-neighborhood) | generic spatial neighborhood (counting-sort hash) |
+| [wgpu-kit/grid](#wgpu-kitgrid--generic-spatial-neighborhood) | generic spatial neighborhood (counting-sort hash, v2.0 encoding contract) |
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
 | [wgpu-kit/three](#wgpu-kitthree--threepoints) | three.js interop |
 | [wgpu-kit/media](#wgpu-kitmedia--canvasrecorder) | canvas recording |
