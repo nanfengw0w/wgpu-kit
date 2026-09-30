@@ -38,6 +38,27 @@ export class GpuContext {
     return GpuContext.#singleton;
   }
 
+  /**
+   * [v2.0] 接入调用方已有的 GPUDevice(TypeGPU 互操作的关键桥,决策 D9):
+   * 对方 `tgpu.init()` 的设备经 adopt 进入 wgpu-kit,此后全库单例与
+   * Buffer.create 都走它。adapter 不可知时从 device.adapterInfo 取诊断信息。
+   * 注意:同步替换单例——须在首次 get() 之前调用,否则抛错(避免运行中换设备)。
+   */
+  static adopt(device: GPUDevice): GpuContext {
+    if (GpuContext.#singleton) {
+      throw new WebGPUUnavailableError('GpuContext.adopt: context already created — call adopt() before any get()');
+    }
+    const info = (device as GPUDevice & { adapterInfo?: GPUAdapterInfo }).adapterInfo;
+    const label = info
+      ? [info.vendor, info.architecture, info.description].filter(Boolean).join(' / ') || 'adopted device'
+      : 'adopted device';
+    // adapter 无法从 device 反取——以 device 自身为强引用锚(占位类型收窄),
+    // 防止 GC 链断裂(见 #adapter 注释)
+    const ctx = new GpuContext(device, label, device as unknown as GPUAdapter);
+    GpuContext.#singleton = Promise.resolve(ctx);
+    return ctx;
+  }
+
   static async #create(): Promise<GpuContext> {
     if (typeof navigator === 'undefined' || !('gpu' in navigator) || !navigator.gpu) {
       throw new WebGPUUnavailableError('navigator.gpu is not available');
@@ -65,7 +86,13 @@ export class GpuContext {
       const supported = (adapter.limits as unknown as Record<string, number>)[key];
       if (typeof supported === 'number') requiredLimits[key] = supported;
     }
-    const device = await adapter.requestDevice({ label: 'wgpu-kit', requiredLimits });
+    const device = await adapter.requestDevice({
+      label: 'wgpu-kit',
+      requiredLimits,
+      // timestamp-query 是可选能力,默认不启用(复审 P1-3):adapter 支持就请求,
+      // 否则 observe.timeGpu 在默认路径永远抛"特性缺失"——即使硬件完全支持
+      requiredFeatures: adapter.features.has('timestamp-query') ? ['timestamp-query'] : [],
+    });
     return new GpuContext(device, label, adapter);
   }
 

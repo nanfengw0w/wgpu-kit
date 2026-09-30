@@ -13,7 +13,6 @@ export default defineConfig({
       input: {
         index: resolve(R, 'index.html'),
         detect: resolve(R, 'detect.html'),
-        life: resolve(R, 'life.html'),
         gallery: resolve(R, 'gallery.html'),
         'react-demo': resolve(R, 'react-demo.html'),
       },

@@ -53,18 +53,11 @@ await integrate.run({ pos, vel }, { dt: 0.02 });
 | --- | --- |
 | `wgpu-kit` | elementKernel 核心 + Buffer / PingPong / rawKernel + **类型化 schema** + **pack 平台** |
 | `wgpu-kit/particles` | 粒子生命:力矩阵预设、自适应世界、热更新 |
-| `wgpu-kit/life` | 图灵斑图 / 粘菌 / Boids / 软体触手 |
-| `wgpu-kit/fields` | 向量场平迹 |
-| `wgpu-kit/image` | GPU 滤镜管线(blur/sharpen/edge/…) |
 | `wgpu-kit/react` | `<ParticleCanvas />` |
 | `wgpu-kit/three` | three.js 快照互通 |
 | `wgpu-kit/media` | 画布录制(webm/mp4) |
 | `wgpu-kit/observe` | GPU 计时 / 设备诊断 / 画布助手 |
 | `wgpu-kit/vite` | WGSL kernel 热重载 |
-
-![life quartet](life-quartet.png)
-
-*life 包:图灵斑图 / 粘菌 / Boids / 软体触手 — [打开演示](https://nanfengw0w.github.io/wgpu-kit/life.html)。*
 
 ## 类型化 schema
 
@@ -109,7 +102,7 @@ const orbit = definePack({
   },
 });
 registerPack(orbit);
-listPacks(); // [{ name: 'particles', … }, { name: 'fields', … }, { name: 'orbit', … }]
+listPacks(); // [{ name: 'particles', … }, { name: 'orbit', … }]
 ```
 
 `probe()` 是平台的关键约定:第三方包在验证 harness 里享受与内置包完全相同
@@ -131,7 +124,7 @@ listPacks(); // [{ name: 'particles', … }, { name: 'fields', … }, { name: 'o
 | 粒子端到端 | 200,000 @ ~120fps · 66,000 @ ~144fps | 显示 | RTX 4060 Laptop,playground 探针 |
 | 粒子计算(grid)同步 | 16k → 200k:3.6 → 36ms/帧 | 同步 | `npm run bench` → docs/BENCHMARK.md |
 | 邻域算法 | grid 近似 O(N),66k 时比暴力快 8.5× | 同步 A/B | 同会话 |
-| 库体积 | core gzip ~16kB,含类型化 schema 与 pack 平台(共享上下文构建) | — | gzip 预算由 build 强制 |
+| 库体积 | core gzip ~25 kB,含原语层、类型化 schema 与 pack 平台(共享上下文构建) | — | gzip 预算由 build 强制 |
 
 所以:如果你用每帧 `device.queue.onSubmittedWorkDone()` 去测 grid@200k,
 看到的会是 ~30ms——那是同步延迟列,和 120fps 不矛盾。

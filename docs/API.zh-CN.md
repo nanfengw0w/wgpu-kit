@@ -1,18 +1,15 @@
 # wgpu-kit API 参考
 
 > 浏览器 GPGPU 中间层。本页是全部公开接口的参考文档,风格对齐 three.js docs。
-> 版本:v0.9.10 · 需 WebGPU(Chrome/Edge 113+、Safari 18+)· 零运行时依赖
+> 版本:v2.0 · 需 WebGPU(Chrome/Edge 113+、Safari 18+)· 零运行时依赖
 
 **入口总览**
 
 | 入口 | 内容 |
 | --- | --- |
-| [wgpu-kit](#wgpu-kit--kernel-核心) | GpuContext · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · 错误类 |
+| [wgpu-kit](#wgpu-kit--kernel-核心) | GpuContext(含 adopt)· Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · createScan · createReduce · 错误类 |
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | 粒子生命模拟 |
-| [wgpu-kit/life](#wgpu-kitlife--人工生命) | 图灵斑图 · 粘菌 · Boids · 软体触手 |
-| [wgpu-kit/fields](#wgpu-kitfields--flow) | 向量场平迹 |
-| [wgpu-kit/grid](#wgpu-kitgrid--通用空间邻域) | 通用空间邻域(计数排序哈希) |
-| [wgpu-kit/image](#wgpu-kitimage--applyimage) | GPU 滤镜管线 |
+| [wgpu-kit/grid](#wgpu-kitgrid--通用空间邻域) | 通用空间邻域(计数排序哈希;v2.0 编码合同) |
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
 | [wgpu-kit/three](#wgpu-kitthree--threepoints) | three.js 互通 |
 | [wgpu-kit/media](#wgpu-kitmedia--canvasrecorder) | 画布录制 |
@@ -31,6 +28,12 @@
 ##### GpuContext.get ( ) : Promise\<GpuContext\>
 
 获取(或创建)全局唯一上下文。失败时缓存被清除,修复环境后可重试。
+
+##### GpuContext.adopt ( device : GPUDevice ) : GpuContext —— v2.0
+
+接入调用方**自有**的 GPUDevice(TypeGPU 互操作桥:把 `tgpu.init()` 的设备
+递进来),此后全库单例与 `Buffer.create` 都运行于该设备。必须在首次
+`get()` **之前**调用——运行中 adopt 会抛错。
 
 ##### 实例属性
 
@@ -162,7 +165,7 @@ await integrate.replace(`
 | name | string | 调试名(错误信息中出现) | `'kernel'` |
 | state | Record\<string, ScalarKind\> | **读写**缓冲字段 | `{}` |
 | inputs | Record\<string, ScalarKind\> | **只读**缓冲字段 | `{}` |
-| uniforms | Record\<string, ScalarKind\> | uniform 标量(仅 f32/i32/u32) | `{}` |
+| uniforms | Record\<string, ScalarKind\> | uniform 字段类型(声明 ScalarKind;值支持 vec2/3/4 向量) | `{}` |
 | workgroupSize | number | workgroup 大小,1..512 | `64` |
 | code | string | 用户 WGSL 函数,**必须命名 `userFn`** | 必填 |
 
@@ -174,6 +177,12 @@ await integrate.replace(`
 4. `state`/`inputs` 字段名在函数体内即数组,直接 `name[idx]` 访问;
 5. `count` 是保留名(uniform 由库自动注入并做越界保护);
 6. state 与 inputs 的字段名不能重复。
+
+**词法分析边界(已知限制)**:资源使用检测会先剥离注释、`struct` 声明体、
+成员访问(`.字段`)与不可达 helper;但**遮蔽**资源名的局部变量
+(`let ghost = 2.0;` 同时声明了 ghost 缓冲)仍会计为"已使用"——该缓冲会
+进 bind group,dispatch 可能被拒绝。规避方式:重命名局部变量(真正的
+WGSL 解析器不在承诺范围内,见 defineSchema 的诚实边界)。
 
 抛出:`UsageError`(描述非法/保留名/重复字段/非法 workgroupSize)。
 
@@ -195,9 +204,24 @@ await integrate.replace(`
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | resources | Record\<string, Buffer\> | state/inputs 全部字段 → Buffer 映射 |
-| uniforms | Record\<string, number\> | uniform 标量值(须与声明一致) |
+| uniforms | Record\<string, UniformValue\> | uniform 值(标量或 {x,y,z?,w?} 向量,须与声明一致;v2.0 起支持向量) |
 
 抛出:`UsageError`(缺资源/类型不匹配/长度不一致)、`CompileError`(WGSL 编译失败,**行号映射回你的 code**)。
+
+##### .prepare ( ) : Promise\<void\> —— v2.0
+
+幂等异步准备:解析上下文、编译管线、分配内部资源。必须在 `encode` 前完成。
+
+##### .encode ( encoder : GPUCommandEncoder, resources, uniforms? ) : void —— v2.0
+
+同步编码:把 dispatch 写入**你的** encoder(不提交)。多个 kernel 可组成同
+一条计算链。**encode-once-per-submit 合同**:同一实例的共享 uniform 快照
+在一次提交前只能 encode 一次,重复会抛 `UsageError`;自定义 submit 后调用
+`.endSubmit()` 重置(`.resetEncodeGuard()` 可整体解除)。
+
+##### .endSubmit ( ) : void —— v2.0
+
+自定义 submit 流程完成后调用:重置 encode-once 检测。
 
 ##### .replace ( code : string ) : Promise\<void\>
 
@@ -378,7 +402,7 @@ const orbit = definePack({
   }),
 });
 registerPack(orbit);
-listPacks(); // 包含 'particles'、'fields'、'orbit'
+listPacks(); // 包含 'particles'、'orbit'
 ```
 
 ---
@@ -472,138 +496,6 @@ frame();
 ##### .destroy ( ) : void
 
 释放全部资源。此后 sim 不可用。
-
----
-
-# wgpu-kit/life · 人工生命
-
-四个独立的涌现模拟,接口同构:`attach(canvas)` / `tick()` / `stats()` / `destroy()`。
-以下仅列差异部分,通用方法同 particles。
-
-## turing ( config? ) : Promise\<TuringSim\>
-
-Gray-Scott 反应扩散:两种化学物质自发长出珊瑚/细胞/斑纹。
-
-| config | 类型 | 说明 | 默认 |
-| --- | --- | --- | --- |
-| size | number | 网格边长(正方形) | `512` |
-| preset | 'coral' \| 'mitosis' \| 'spots' \| 'waves' \| 'custom' | 参数预设 | `'coral'` |
-| feed / kill | number | 自定义 f/k(preset 为 custom 时生效) | 随预设 |
-| steps | number | 每帧迭代步数 | `12` |
-| colormap | string | 'duotone'(默认)\| 'amber' \| 'ice' \| 'mono' | — |
-| seed | string \| number | 初始扰动种子 | `'life'` |
-
-| 额外方法 | 说明 |
-| --- | --- |
-| .sprinkle ( count? = 6 ) | 在随机位置撒扰动(救场/交互) |
-| .sampleB ( ) : Promise\<Float32Array\> | 读回 B 物质浓度场 |
-
-预设参数表:`coral` f=0.0545 k=0.062 · `mitosis` f=0.0367 k=0.0649 · `spots` f=0.03 k=0.062 · `waves` f=0.014 k=0.045。
-
-## physarum ( config? ) : Promise\<PhysarumSim\>
-
-粘菌:三触须感知信息素 → 转向 → 前进 → 沉积;信息素扩散衰减,菌丝网络自会长出。
-
-| config | 类型 | 说明 | 默认 |
-| --- | --- | --- | --- |
-| agents | number | 智能体数 | `100_000` |
-| mapSize | number | 信息素图边长 | `1024` |
-| sensorAngle / sensorDist / turnAngle / step | number | 感知与运动参数 | 0.5 / 0.012 / 0.45 / 0.003 |
-| decay | number | 每帧衰减比例 | `0.06` |
-| colormap | string | 默认 'amber' | — |
-
-额外方法:`sampleTrail()` 读回信息素图。
-
-## boids ( config? ) : Promise\<BoidsSim\>
-
-Boids 鸟群:分离/对齐/聚集三规则,grid 邻域加速。
-
-| config | 类型 | 说明 | 默认 |
-| --- | --- | --- | --- |
-| count | number | 个体数 | `3000` |
-| perception | number | 感知半径 | `0.05` |
-| maxSpeed | number | 最大速度 | `0.012` |
-| wSep / wAli / wCoh | number | 分离/对齐/聚集权重 | 1.6 / 1.0 / 0.8 |
-| size | number | 三角尺寸 | `0.009` |
-
-额外方法:`buffers(): { pos, vel }`。
-
-## tentacles ( config? ) : Promise\<TentaclesSim\>
-
-软体触手:Verlet 链 + 黄金角排布的游动锚点,重力与阻尼产生水母般漂移。
-
-| config | 类型 | 说明 | 默认 |
-| --- | --- | --- | --- |
-| chains / segments | number | 触手数 / 每条节数 | 48 / 64 |
-| segLen / gravity / damping | number | 节间距 / 重力 / 阻尼 | 0.018 / 0.00035 / 0.985 |
-| iterations | number | 每帧约束松弛次数 | `10` |
-| thickness / colorCycle | number | 点尺寸基数 / 色相循环速度 | 0.006 / 0.35 |
-
----
-
-# wgpu-kit/fields · flow
-
-向量场平迹:粒子被解析向量场平流并沉积,流线自会浮现——风场/流场可视化的底图。
-
-## 构造
-
-##### flow ( config? : FlowConfig ) : Promise\<FlowSim\>
-
-| config | 类型 | 说明 | 默认 |
-| --- | --- | --- | --- |
-| count | number | 平流粒子数 | `131_072` |
-| mapSize | number | 轨迹图边长 | `1024` |
-| field | 'vortex' \| 'curl' \| 'twin' | 场类型:漩涡 / 湍流噪声 / 双涡 | `'curl'` |
-| speed | number | 每帧移动距离 | `0.004` |
-| decay | number | 每帧衰减 | `0.045` |
-| deposit | number | 沉积量 | `1.0` |
-| colormap | string | 'ice'(默认)\| 'amber' \| 'duotone' \| 'mono' | — |
-| seed | string \| number | 种子 | `'flow'` |
-
-### 方法
-
-同构接口:`attach / tick / stats / sampleTrail / destroy`。
-
----
-
-# wgpu-kit/image · applyImage
-
-GPU 图像滤镜管线:source → 逐算子 ping-pong → target canvas。
-
-## 构造
-
-##### applyImage ( source, target, ops ) : Promise\<ApplyImageResult\>
-
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| source | HTMLCanvasElement \| HTMLImageElement \| ImageBitmap | 输入图像 |
-| target | HTMLCanvasElement | 输出画布(WebGPU 后端) |
-| ops | ImageOp[] | 算子流水线(按序执行) |
-
-返回:`{ width, height, passes, readback(): Promise<Uint8Array> }`——
-`readback()` 为 GPU 直读像素(RGBA,行按 256B 对齐),可用于断言与测试。
-
-### ImageOp 算子表
-
-| 算子 | 参数 | 说明 |
-| --- | --- | --- |
-| { op: 'grayscale' } | — | 灰度(Rec.709 亮度) |
-| { op: 'invert' } | — | 反色 |
-| { op: 'edge', amount? } | amount 默认 1 | Sobel 边缘 |
-| { op: 'blur', radius? } | radius 1..4,默认 1 | 盒式模糊 |
-| { op: 'sharpen', amount? } | amount 默认 1 | 3×3 锐化 |
-| { op: 'brightness', value } | −1..1 | 亮度 |
-| { op: 'contrast', value } | 0..2,1=不变 | 对比度 |
-
-### 代码示例
-
-```ts
-const r = await applyImage(srcCanvas, outCanvas, [
-  { op: 'blur', radius: 2 },
-  { op: 'edge', amount: 1 },
-]);
-const px = await r.readback();   // Uint8Array
-```
 
 ---
 
@@ -785,7 +677,10 @@ hotKernel(k, import.meta.hot, './sim.wgsl');
 | .cellStart | Buffer (readonly) | 各格起始槽位 |
 | .cellFill | Buffer (readonly) | 各格结束槽位 |
 | .order | Buffer (readonly) | 按格子序排列的实体下标 |
-| .update ( pos : Buffer ) : void | 按位置建格(counts → scan → scatter) |
+| .prepare ( ) : Promise\<void\> —— v2.0 | 幂等准备(解析内部 scan 原语) |
+| .encode ( encoder : GPUCommandEncoder, pos : Buffer ) : void —— v2.0 | counts → scan → post → scatter 写入**你的** encoder(不提交;可与力 kernel 组成计算链) |
+| .update ( pos : Buffer ) : void | 便捷路径 = 内部 encoder + 提交 |
+| .endSubmit ( ) : void —— v2.0 | 自定义 submit 后重置内部 scan 的 encode-once 闸 |
 | .destroy ( ) : void | 释放 |
 
 ### 代码示例
@@ -831,3 +726,36 @@ console.log(`GPU: ${ms.toFixed(2)} ms/frame`);
 ##### resizeCanvas ( canvas, dprCap? = 2 ) : boolean
 
 按 DPR 上限调整画布尺寸;返回是否实际改变。
+
+---
+
+# wgpu-kit · createScan / createReduce
+
+v2.0 已验证并行原语:u32 前缀和 `scan`(双档——≤65536 单 workgroup 分块,
+之上三级流水;每条路径都对 CPU 参考**位一致**)与 u32 归约 `reduce`
+(`sumInto` 结果常驻 GPU 供后续 kernel 消费;`sum` 为读回便捷路径)。两者
+与 kernel 一致遵守 encode-once 合同——一次提交前只能 encode 一次,
+`endSubmit()` 重置。
+
+```ts
+import { Buffer, createScan, createReduce } from 'wgpu-kit';
+
+const scan = createScan();
+await scan.prepare();
+const src = await Buffer.create('u32', 100_000);
+const dst = await Buffer.create('u32', 100_000);
+src.write(new Uint32Array(100_000).map((_, i) => i));
+await scan.run(src, dst, 100_000, true);      // 排他前缀和
+const prefix = (await dst.read()) as Uint32Array;
+prefix[3]; // = 0+1+2 = 3
+
+const reduce = createReduce();
+await reduce.prepare();
+const sum = await reduce.sum(src, 100_000);   // 便捷读回(Σ)
+```
+
+dispatch 上限遵循 WebGPU 规范,超限在入口即抛清晰 `UsageError`:
+块数 ≤ 65535(`scan`,即 count ≤ 8192 × 65535)、count ≤ 8192 × 65535
+(`reduce`)。
+
+---

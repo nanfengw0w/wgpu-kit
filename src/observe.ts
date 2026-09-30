@@ -22,20 +22,29 @@ export async function timeGpu(fn: (ctx: GpuContext) => void | Promise<void>): Pr
   });
   const readBuf = device.createBuffer({ size: QUERY_POOL * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
 
-  // 新版 WebGPU 规范:时间戳通过 pass 的 timestampWrites 写入(无 encoder.writeTimestamp)
-  const enc = device.createCommandEncoder();
+  // 新版 WebGPU 规范:时间戳通过 pass 的 timestampWrites 写入(无 encoder.writeTimestamp)。
+  // [v2.0 三段提交,外部审查 P1-1 复核修复] ts0 与 fn 的提交必须处于**不同的
+  // submit**:此前单 encoder 一次提交,fn 的提交先入队、双时间戳 pass 最后
+  // 背靠背执行,包围的是空隙(Δ≈0)而非被测工作。
   {
-    const p0 = enc.beginComputePass({ timestampWrites: { querySet, beginningOfPassWriteIndex: 0 } });
+    const enc0 = device.createCommandEncoder();
+    const p0 = enc0.beginComputePass({ timestampWrites: { querySet, beginningOfPassWriteIndex: 0 } });
     p0.end();
+    device.queue.submit([enc0.finish()]);
   }
+
   await fn(ctx);
+
   {
-    const p1 = enc.beginComputePass({ timestampWrites: { querySet, beginningOfPassWriteIndex: 1 } });
+    const enc1 = device.createCommandEncoder();
+    const p1 = enc1.beginComputePass({ timestampWrites: { querySet, beginningOfPassWriteIndex: 1 } });
     p1.end();
+    enc1.resolveQuerySet(querySet, 0, QUERY_POOL, resolveBuf, 0);
+    enc1.copyBufferToBuffer(resolveBuf, 0, readBuf, 0, QUERY_POOL * 8);
+    device.queue.submit([enc1.finish()]);
   }
-  enc.resolveQuerySet(querySet, 0, QUERY_POOL, resolveBuf, 0);
-  enc.copyBufferToBuffer(resolveBuf, 0, readBuf, 0, QUERY_POOL * 8);
-  device.queue.submit([enc.finish()]);
+  // 口径:ts0→ts1 的 GPU 墙钟时间,含 fn 各次提交之间的空隙与队列排队;
+  // 不区分 fn 内部有多少个 dispatch(per-pass 精确计时需编排层注入 timestampWrites)
 
   await readBuf.mapAsync(GPUMapMode.READ);
   const times = new BigInt64Array(readBuf.getMappedRange().slice(0));

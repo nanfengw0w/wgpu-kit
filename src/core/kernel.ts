@@ -1,4 +1,4 @@
-import { planUniform, packUniformInto, TYPES, type ScalarKind, type UniformLayout } from './layout.ts';
+import { planUniform, packUniformInto, TYPES, type ScalarKind, type UniformLayout, type UniformValue } from './layout.ts';
 import { GpuContext } from './context.ts';
 import { Buffer } from './buffer.ts';
 import { CompileError, ERR, UsageError } from './errors.ts';
@@ -33,7 +33,17 @@ export interface ElementKernel {
   readonly source: string;
   readonly uniformLayout: UniformLayout;
   readonly workgroupSize: number;
-  run(resources: Record<string, Buffer>, uniforms?: Record<string, number>): Promise<void>;
+  run(resources: Record<string, Buffer>, uniforms?: Record<string, UniformValue>): Promise<void>;
+  /** [v2.0] 异步准备:解析上下文、编译管线、分配内部资源。幂等;encode 前必须完成 */
+  prepare(): Promise<void>;
+  /** [v2.0] 同步编码:dispatch 写入调用方 encoder(不提交);须先 prepare()。
+   *  同一实例在一次提交前只能 encode 一次(共享 uniform 快照语义);
+   *  自定义 submit 流程须在提交后调用 endSubmit() 重置检测。 */
+  encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms?: Record<string, UniformValue>): void;
+  /** [v2.0] 自定义 submit 流程完成后调用:重置 encode-once-per-submit 检测 */
+  endSubmit(): void;
+  /** 高级:解除 encode-once-per-submit 检测(自行承担 uniform 覆盖语义) */
+  resetEncodeGuard(): void;
   /** 热重载:替换用户函数并重建管线;编译失败时抛错且内核保持旧版 */
   replace(code: string): Promise<void>;
   destroy(): void;
@@ -95,17 +105,66 @@ export function generateElementKernel(spec: ElementKernelSpec): {
 
   // —— 静态使用分析:layout:'auto' 的绑定组布局只含入口点**实际引用**的绑定。
   // 声明了但 userFn 没用到的字段若塞进 bind group → 校验错误且被异步吞掉
-  // (表现为核不生效)。头文件由我们生成,字段是否使用等价于其名字是否作为
-  // 词法 token 出现在**剥离注释后**的代码里 —— WGSL 解析器剥注释,注释里
-  // 提及字段名(如 "// vel is intentionally unused")不构成使用。
+  // (表现为核不生效)。
+  // 提取管线(外部审查两轮修订):
+  //   ① 剥注释 —— 注释里提及字段名不构成使用;
+  //   ② 剥 struct 声明体 + 成员访问(复审 P1-2)—— `struct Item { ghost: f32 }`
+  //      的成员声明和 `item.ghost` 的成员访问都不构成对全局资源 ghost 的使用;
+  //   ③ 可达性闭包 —— 定义了但 userFn 不可达的 helper 不算使用;
+  //   ④ 词法 token 匹配只在可达体内进行。
+  // 诚实边界:函数内 let 局部变量与全局资源同名的遮蔽场景无法词法判定,
+  // 需要真 WGSL 解析器(见 schema.ts 的边界声明);此前已知并文档化。
   // params(binding 0)因 params.count 恒被使用。
-  const codeNoComments = spec.code.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ');
-  const wordInCode = (n: string) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(codeNoComments);
+  const codeNoComments = spec.code
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/.*$/gm, ' ')
+    .replace(/struct\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\}/g, ' ')
+    .replace(/\.\s*[A-Za-z_][A-Za-z0-9_]*/g, ' ');
+  // 收集 userFn 可达的函数体(text);无 userFn(坏输入)时退化为全文匹配,
+  // 让后续编译错误正常浮出而不是静默误判
+  const reachableBodies = (): string[] => {
+    const fnHeader = /fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+    const bodies = new Map<string, string>();
+    let m: RegExpExecArray | null;
+    while ((m = fnHeader.exec(codeNoComments)) !== null) {
+      const name = m[1]!;
+      const braceStart = codeNoComments.indexOf('{', m.index + m[0].length - 1);
+      if (braceStart === -1) continue;
+      let depth = 0;
+      let end = -1;
+      for (let i = braceStart; i < codeNoComments.length; i++) {
+        if (codeNoComments[i] === '{') depth++;
+        else if (codeNoComments[i] === '}') {
+          depth--;
+          if (depth === 0) { end = i; break; }
+        }
+      }
+      if (end !== -1) bodies.set(name, codeNoComments.slice(braceStart, end + 1));
+    }
+    const reachable: string[] = [];
+    const seen = new Set<string>();
+    const visit = (body: string) => {
+      reachable.push(body);
+      for (const [name, text] of bodies) {
+        if (!seen.has(name) && new RegExp(`\\b${name}\\b`).test(body)) {
+          seen.add(name);
+          visit(text);
+        }
+      }
+    };
+    const userFnBody = bodies.get('userFn');
+    if (userFnBody) { seen.add('userFn'); visit(userFnBody); return reachable; }
+    return [codeNoComments];
+  };
+  const wordInReachable = (n: string) => {
+    const re = new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    return reachableBodies().some((body) => re.test(body));
+  };
   const usedBindings = new Set<number>([0]);
   {
     let b = 1;
-    for (const [n] of state) { if (wordInCode(n)) usedBindings.add(b); b++; }
-    for (const [n] of inputs) { if (wordInCode(n)) usedBindings.add(b); b++; }
+    for (const [n] of state) { if (wordInReachable(n)) usedBindings.add(b); b++; }
+    for (const [n] of inputs) { if (wordInReachable(n)) usedBindings.add(b); b++; }
   }
 
   // —— 生成 WGSL:头部(声明) + main + 用户代码 ——
@@ -155,9 +214,14 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
   const sharedPack = new ArrayBuffer(uniformLayout.size); // 复用打包缓冲(writeBuffer 会拷贝)
 
   let pipelinePromise: Promise<GPUComputePipeline> | null = null;
+  let pipeline: GPUComputePipeline | null = null; // resolve 后的同步引用(encode 用)
   let cachedCtx: GpuContext | null = null; // 首帧后缓存为普通引用
   const bindGroupCache = new Map<number, { bg: GPUBindGroup; ids: readonly number[] }>();
   let uniformBuffer: GPUBuffer | null = null;
+  // encode-once-per-submit 合同的运行时检测(外部审查 P1-2):默认开启,
+  // encode 打开闸、submit 关闭;生产高级用法可 resetEncodeGuard() 解除
+  let encodeGuardArmed = true;
+  let encodeGuardOpen = false;
 
   const compilePipeline = async (): Promise<GPUComputePipeline> => {
     const ctx = await GpuContext.get();
@@ -175,11 +239,24 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
     return device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
   };
 
+  const ensureUniformBuffer = (device: GPUDevice): GPUBuffer => {
+    if (!uniformBuffer) {
+      uniformBuffer = device.createBuffer({
+        size: uniformLayout.size,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: uniformBufferName,
+      });
+    }
+    return uniformBuffer;
+  };
+
   async function getPipeline(): Promise<GPUComputePipeline> {
+    if (pipeline) return pipeline;
     if (!pipelinePromise) {
       pipelinePromise = compilePipeline().catch((e) => { pipelinePromise = null; throw e; });
     }
-    return pipelinePromise;
+    pipeline = await pipelinePromise;
+    return pipeline;
   }
 
   return {
@@ -200,6 +277,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       try {
         const p = await compilePipeline();
         pipelinePromise = Promise.resolve(p);
+        pipeline = p;
         bindGroupCache.clear();
       } catch (e) {
         source = savedSource;
@@ -209,12 +287,37 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       }
     },
 
-    async run(resources: Record<string, Buffer>, uniforms: Record<string, number> = {}): Promise<void> {
-      if (!cachedCtx) cachedCtx = await GpuContext.get();
+    async prepare(): Promise<void> {
+      cachedCtx ??= await GpuContext.get();
+      await getPipeline();
+      ensureUniformBuffer(cachedCtx.device);
+    },
+
+    /**
+     * [v2.0] 同步编码:把 dispatch 命令写入调用方的 encoder,不提交。
+     * 多个 kernel 可写入同一 encoder 组成计算链,由调用方决定提交时机。
+     * 前置条件:prepare() 已完成(否则内部管线/uniform 资源尚未就绪)。
+     *
+     * 参数快照语义:encode 把 uniform **立即**写入内部 uniform buffer(队列
+     * 顺序=调用顺序),本 dispatch 绑定的就是这份快照。因此同一实例在**一次
+     * 提交前**只能 encode 一次——连续两次 encode 会把共享 uniform 覆盖成
+     * 第二份参数(两个 dispatch 都读到它,外部审查 P1-2)。需要同 kernel 多组
+     * 参数时:每组一次 encode+submit,或用多个 elementKernel 实例。
+     * 运行时检测:提交间隔内重复 encode 抛 UsageError(生产环境可用
+     * resetEncodeGuard() 解除,见下)。
+     */
+    encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms: Record<string, UniformValue> = {}): void {
+      if (!cachedCtx || !pipeline || !uniformBuffer) {
+        throw new UsageError(ERR.USAGE, `kernel "${normalized.name}".encode called before prepare() — await kernel.prepare() first`);
+      }
+      if (encodeGuardArmed && encodeGuardOpen) {
+        throw new UsageError(ERR.USAGE, `kernel "${normalized.name}".encode called twice before submit — the shared uniform would be overwritten (encode-once-per-submit contract; see docs). Call submit between encodes, or create one kernel instance per concurrent encode.`);
+      }
       const device = cachedCtx.device;
-      const pipeline = await getPipeline();
 
       // —— 资源校验 + 有序收集(预展开清单,稳态零分配) ——
+      // 注意顺序(外部审查 P2-1):guard 在校验**之后**才打开——校验抛错时
+      // 不锁闸,同一 encoder 上用正确资源重试必须可行
       const ordered: Buffer[] = [];
       let count = -1;
       let firstKey = '';
@@ -232,9 +335,11 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
         }
         ordered.push(buf);
       }
-
       // —— uniform 打包上传 ——
+      // guard 在资源与 uniform 校验**全部通过后**才打开(复审 P2-1:打包抛错
+      // 时若已开闸,同一实例的重试会被误拒)
       packUniformInto(sharedPack, uniformLayout, { ...uniforms, count });
+      if (encodeGuardArmed) encodeGuardOpen = true;
       if (!uniformBuffer) {
         uniformBuffer = device.createBuffer({
           size: uniformLayout.size,
@@ -262,14 +367,30 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
         bindGroupCache.set(cacheKey, { bg, ids });
       }
 
-      // —— 编码提交 ——
-      const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
+      // —— 写入调用方 encoder(不提交) ——
+      const pass = encoder.beginComputePass();
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bg);
       pass.dispatchWorkgroups(Math.ceil(count / normalized.workgroupSize));
       pass.end();
-      device.queue.submit([enc.finish()]);
+    },
+
+    async run(resources: Record<string, Buffer>, uniforms: Record<string, UniformValue> = {}): Promise<void> {
+      await this.prepare();
+      const enc = cachedCtx!.device.createCommandEncoder();
+      this.encode(enc, resources, uniforms);
+      cachedCtx!.device.queue.submit([enc.finish()]);
+      encodeGuardOpen = false;
+    },
+
+    /** [v2.0] 自定义 submit 流程完成后调用:重置 encode-once-per-submit 检测 */
+    endSubmit(): void {
+      encodeGuardOpen = false;
+    },
+
+    /** 高级:解除 encode-once-per-submit 检测(自行承担 uniform 覆盖语义) */
+    resetEncodeGuard(): void {
+      encodeGuardArmed = false;
     },
 
     destroy(): void {
@@ -277,6 +398,7 @@ export function elementKernel(spec: ElementKernelSpec): ElementKernel {
       bindGroupCache.clear();
       uniformBuffer?.destroy();
       uniformBuffer = null;
+      encodeGuardOpen = false;
     },
   };
 }

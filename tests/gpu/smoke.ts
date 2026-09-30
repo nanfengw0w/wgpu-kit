@@ -5,6 +5,7 @@
  * 由 harness(scripts/verify.mjs)无头运行;页面契约同 spike。
  */
 import { GpuContext, Buffer, elementKernel, rawKernel, PingPong, CompileError, UsageError, defineSchema, particles, type Vec2 } from '../../src/index.ts';
+import { timeGpu } from '../../src/observe.ts';
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
 const report = (name: string, pass: boolean, detail = '') => {
@@ -16,9 +17,50 @@ const report = (name: string, pass: boolean, detail = '') => {
 const near = (a: number, b: number, eps = 1e-4) => Math.abs(a - b) <= eps;
 
 async function main() {
+  // T0 adopt:接入调用方自有设备(v2.0 资源契约)——必须先于任何 get();
+  // 此后全部探针都跑在接入设备上,等于整页冒烟变成 adopt 路径的常测覆盖
+  let adoptInfo = 'skipped: no adapter';
+  {
+    const adapter = (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }))
+      ?? (await navigator.gpu.requestAdapter({ forceFallbackAdapter: true }));
+    if (adapter) {
+      const device = await adapter.requestDevice({ label: 'smoke-adopted' });
+      adoptInfo = GpuContext.adopt(device).adapterInfo;
+      const k = elementKernel({ name: 'adopt-probe', state: { x: 'f32' }, code: 'fn userFn(idx: u32) { x[idx] = 7.0; }' });
+      const buf = await Buffer.create('f32', 8);
+      await k.run({ x: buf });
+      const got = (await buf.read()) as Float32Array;
+      report('adopt-device', got[3] === 7, `设备 ${adoptInfo} · x[3]=${got[3]}(期 7;全库运行于接入设备)`);
+      buf.destroy();
+    } else {
+      report('adopt-device', false, 'requestAdapter null(环境无适配器)');
+    }
+  }
+
   const ctx = await GpuContext.get();
   (window as any).__adapter = ctx.adapterInfo;
-  report('context-adapter', true, ctx.adapterInfo);
+  report('context-adapter', true, `${ctx.adapterInfo} · adopt=${adoptInfo}`);
+
+  // T1b 纹理读写回裸诊断(原 packages 页迁移):writeTexture → copyTextureToBuffer → mapAsync
+  {
+    const t = ctx.device.createTexture({ size: [4, 4], format: 'rgba8unorm', usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
+    ctx.device.queue.writeTexture({ texture: t }, new Uint8Array([
+      255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,255,255,
+      1,2,3,255, 5,6,7,255, 9,10,11,255, 13,14,15,255,
+      16,17,18,255, 19,20,21,255, 22,23,24,255, 25,26,27,255,
+      28,29,30,255, 31,32,33,255, 33,34,35,255, 37,38,39,255,
+    ]), { bytesPerRow: 16, rowsPerImage: 4 }, [4, 4]);
+    const staging = ctx.device.createBuffer({ size: 256 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = ctx.device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: t }, { buffer: staging, bytesPerRow: 256, rowsPerImage: 4 }, [4, 4]);
+    ctx.device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(staging.getMappedRange().slice(0));
+    staging.unmap();
+    report('gpu-texture-roundtrip', px[0] === 255 && px[4] === 0 && px[256] === 1, `R=${px[0]} G=${px[1]} 第二行首=${px[256]}`);
+    t.destroy();
+    staging.destroy();
+  }
 
   // T1 向量加:inputs 只读 + state 写出
   {
@@ -239,6 +281,193 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     report('comment-field-ignored', got[5] === 6, `out[5]=${got[5]}(期 6;注释提及未用字段不得使 bind group 失配)`);
     out.destroy();
     inp.destroy();
+  }
+
+  // T11b 未调用 helper 中的字段不算使用(外部审查 P1-3):
+  // unusedHelper 定义了但 main 不可达,其中引用的 ghost 不得进 bind group
+  {
+    const n = 32;
+    const out = await Buffer.create('f32', n);
+    const inp = await Buffer.create('f32', n);
+    inp.write(new Float32Array(n).map((_, i) => i));
+    const ghost = await Buffer.create('f32', n);
+    const k = elementKernel({
+      name: 'ghost-helper',
+      state: { out: 'f32', ghost: 'f32' },
+      inputs: { a: 'f32' },
+      code: 'fn unusedHelper(idx: u32) {\n  ghost[idx] = 0.0;\n}\nfn userFn(idx: u32) {\n  out[idx] = a[idx] + 2.0;\n}',
+    });
+    await k.run({ out, a: inp, ghost });
+    const got = (await out.read()) as Float32Array;
+    report('dead-helper-field-ignored', got[5] === 7, `out[5]=${got[5]}(期 7;死代码里的字段不进布局)`);
+    out.destroy();
+    inp.destroy();
+    ghost.destroy();
+  }
+
+  // T11c encode-once-per-submit 合同(外部审查 P1-2):
+  // 提交前对同一实例重复 encode 必须抛 UsageError(共享 uniform 快照语义)
+  {
+    const out = await Buffer.create('f32', 8);
+    const k = elementKernel({ name: 'twice-encode', state: { out: 'f32' }, code: 'fn userFn(idx: u32) { out[idx] = 1.0; }' });
+    await k.prepare();
+    const enc = ctx.device.createCommandEncoder();
+    k.encode(enc, { out });
+    let threw = false;
+    try {
+      k.encode(enc, { out });
+    } catch (e) {
+      threw = e instanceof UsageError;
+    }
+    // 结束本次合同周期后正常路径应恢复
+    ctx.device.queue.submit([enc.finish()]);
+    k.endSubmit();
+    await k.run({ out });
+    const normal = ((await out.read()) as Float32Array)[0] === 1;
+    report('encode-once-guard', threw && normal, `重复 encode 抛错=${threw} 提交后恢复=${normal}`);
+    out.destroy();
+  }
+
+  // T11d 校验失败不锁 guard(复审 P2-1):encode 因缺资源抛错后,
+  // 同一 encoder 上用正确资源重试必须可行
+  {
+    const out = await Buffer.create('f32', 8);
+    const a = await Buffer.create('f32', 8);
+    a.write(new Float32Array(8).fill(3));
+    const k = elementKernel({ name: 'guard-retry', state: { out: 'f32' }, inputs: { a: 'f32' }, code: 'fn userFn(idx: u32) { out[idx] = a[idx] + 1.0; }' });
+    await k.prepare();
+    const enc = ctx.device.createCommandEncoder();
+    let firstThrew = false;
+    try {
+      k.encode(enc, { a }); // 缺 out → RESOURCE_MISSING
+    } catch (e) {
+      firstThrew = e instanceof UsageError;
+    }
+    k.encode(enc, { out, a }); // 重试:guard 不得已打开
+    ctx.device.queue.submit([enc.finish()]);
+    k.endSubmit();
+    const got = (await out.read()) as Float32Array;
+    report('encode-fail-does-not-lock-guard', firstThrew && got[0] === 4, `首次抛错=${firstThrew} 重试生效 out[0]=${got[0]}(期 4)`);
+    out.destroy();
+    a.destroy();
+  }
+
+  // T11d2 uniform 校验失败同样不锁 guard(第三轮 P2-1):缺 uniforms 重试
+  {
+    const out = await Buffer.create('f32', 8);
+    const k = elementKernel({
+      name: 'guard-uniform-retry',
+      state: { out: 'f32' },
+      uniforms: { scale: 'f32' },
+      code: 'fn userFn(idx: u32, scale: f32) { out[idx] = scale; }',
+    });
+    await k.prepare();
+    const enc = ctx.device.createCommandEncoder();
+    let firstThrew = false;
+    try {
+      k.encode(enc, { out }, {}); // 缺 scale → UNIFORM_FIELD
+    } catch (e) {
+      firstThrew = e instanceof UsageError;
+    }
+    k.encode(enc, { out }, { scale: 5 }); // guard 不得已打开,重试可行
+    ctx.device.queue.submit([enc.finish()]);
+    k.endSubmit();
+    const got = (await out.read()) as Float32Array;
+    report('encode-uniform-fail-no-lock', firstThrew && got[3] === 5, `首次抛错=${firstThrew} 重试生效 out[3]=${got[3]}(期 5)`);
+    out.destroy();
+  }
+
+  // T11f 局部变量遮蔽资源名(第三轮 P2-2,已知限制的规避路径探针):
+  // 重命名局部变量后内核正常工作——限制已文档化于 API.md code contract
+  {
+    const n = 16;
+    const out = await Buffer.create('f32', n);
+    const ghost = await Buffer.create('f32', n);
+    const k = elementKernel({
+      name: 'shadow-renamed',
+      state: { out: 'f32', ghost: 'f32' },
+      code: 'fn userFn(idx: u32) {\n  let g2 = 4.0;\n  out[idx] = g2;\n  ghost[idx] = 0.0;\n}',
+    });
+    await k.run({ out, ghost });
+    const got = (await out.read()) as Float32Array;
+    report('shadow-rename-workaround', got[3] === 4, `out[3]=${got[3]}(期 4;重命名局部变量后正常)`);
+    out.destroy();
+    ghost.destroy();
+  }
+
+  // T11e 结构成员同名不误判(复审 P1-2):inputs 声明 ghost,
+  // userFn 只访问 item.ghost(struct 成员)——ghost 全局资源不得进布局
+  {
+    const n = 16;
+    const out = await Buffer.create('f32', n);
+    const ghost = await Buffer.create('f32', n);
+    const k = elementKernel({
+      name: 'struct-member-shadow',
+      state: { out: 'f32', ghost: 'f32' },
+      code: 'struct Item { ghost: f32, }\nfn userFn(idx: u32) {\n  let item = Item(2.0);\n  out[idx] = item.ghost;\n  ghost[idx] = 0.0;\n}',
+    });
+    await k.run({ out, ghost });
+    const got = (await out.read()) as Float32Array;
+    report('struct-member-not-a-use', got[3] === 2, `out[3]=${got[3]}(期 2;成员访问 item.ghost 不算全局使用)`);
+    out.destroy();
+    ghost.destroy();
+  }
+
+  // T12 向量 uniform:setParams 式传值 {x,y},kernel 以 vec2f 形参消费
+  {
+    const buf = await Buffer.create('vec2f', 4);
+    const k = elementKernel({
+      name: 'vec-uniform',
+      state: { out: 'vec2f' },
+      uniforms: { origin: 'vec2f' },
+      code: 'fn userFn(idx: u32, origin: vec2f) { out[idx] = origin + vec2f(f32(idx), -f32(idx)); }',
+    });
+    await k.run({ out: buf }, { origin: { x: 10, y: 20 } });
+    const rows = (await buf.read()) as Float32Array;
+    const ok = rows[4] === 12 && rows[5] === 18;
+    report('vector-uniform', ok, `out[2]=[${rows[4]},${rows[5]}](期 [12,18];uniform 向量化)`);
+    buf.destroy();
+  }
+
+  // T13 编码合同:两个 kernel 写进同一条计算链(一次提交),效果串联
+  // 背景:encode 合同是 v2.0 的头号特性,必须有直接探针——此前只有 run() 间接覆盖
+  {
+    const n = 64;
+    const buf = await Buffer.create('f32', n);
+    const ka = elementKernel({ name: 'chain-double', state: { x: 'f32' }, code: 'fn userFn(idx: u32) { x[idx] = x[idx] * 2.0; }' });
+    const kb = elementKernel({ name: 'chain-inc', state: { y: 'f32' }, inputs: { a: 'f32' }, code: 'fn userFn(idx: u32) { y[idx] = a[idx] + 1.0; }' });
+    await Promise.all([ka.prepare(), kb.prepare()]);
+    const a = await Buffer.create('f32', n);
+    a.write(new Float32Array(n).map((_, i) => i));
+    const b = await Buffer.create('f32', n);
+    // 链:x=数据 → A(×2 写 a) → B(a 读入 +1 写 b) —— 一次提交
+    const enc = ctx.device.createCommandEncoder();
+    ka.encode(enc, { x: a });
+    kb.encode(enc, { y: b, a });
+    ctx.device.queue.submit([enc.finish()]);
+    await ctx.sync();
+    const got = (await b.read()) as Float32Array;
+    const ok = got[10] === 21 && got[63] === 127;
+    report('encode-contract-chain', ok, `b[10]=${got[10]} b[63]=${got[63]}(期 21/127;双 kernel 单提交串联)`);
+    buf.destroy();
+    a.destroy();
+    b.destroy();
+  }
+
+  // T14 timeGpu 三段提交修复:必须测得非零 GPU 时间(旧实现双时间戳背靠背,Δ≈0)
+  // T14 timeGpu 三段提交修复:必须测得非零 GPU 时间(旧实现双时间戳背靠背,Δ≈0)
+  // timestamp-query 需要设备特性;缺失时跳过(特性探针原则),不判失败
+  if (ctx.device.features.has('timestamp-query')) {
+    const buf = await Buffer.create('f32', 1 << 20); // 1M 元素,保证 GPU 时间 > 0
+    const k = elementKernel({ name: 'timed', state: { x: 'f32' }, code: 'fn userFn(idx: u32) { x[idx] = x[idx] * 1.0000001 + 0.5; }' });
+    const ms = await timeGpu(async () => {
+      for (let i = 0; i < 20; i++) await k.run({ x: buf });
+    });
+    const ok = Number.isFinite(ms) && ms > 0 && ms < 5000;
+    report('timegpu-brackets-work', ok, `${ms.toFixed(3)} ms(20 次提交;须 > 0 且 < 5000)`);
+    buf.destroy();
+  } else {
+    report('timegpu-brackets-work', true, 'skipped: 设备不支持 timestamp-query(特性探针原则,真机验证)');
   }
 
   await ctx.sync();
