@@ -1,0 +1,18 @@
+wgpu-kit Showcase
+
+Runtime dependency: the local wgpu-kit package in this repository, built and bundled with esbuild.
+The imported API documentation was originally audited against wgpu-kit 2.0.0.
+https://github.com/nanfengw0w/wgpu-kit
+Verified git revision: 306a7a7233c9de8b433d179ed1164482143a4989
+MIT License, Copyright (c) 2026 wgpu-kit authors. See WGPU-KIT-LICENSE.txt.
+
+The page hierarchy and restrained documentation layout reference vgpu.sh and its open-source homepage. All branding, prose, the interactive 3D sculpture, and custom example applications are independently implemented for wgpu-kit. No vgpu/Vercel graphics, prism renderer, screenshot, or branding is included.
+Reference source: https://github.com/vercel-labs/vgpu
+MIT License, Copyright (c) 2025 Vercel, Inc. See VGPU-LICENSE.txt.
+
+Geist font: https://github.com/vercel/geist-font
+SIL Open Font License 1.1. See GEIST-LICENSE.txt.
+
+Local validation used the official Dawn Node WebGPU package with Vulkan SwiftShader. These QA dependencies are not shipped as website runtime code. The retained preview assets originate from the supplied showcase archive. Archive QA results are not included in this repository and are not evidence of validation of this integration.
+
+PrismJS 1.30.0: MIT license. See PRISM-LICENSE.txt. Official TypeScript, JavaScript and Bash grammars plus an original WGSL grammar provide syntax highlighting.

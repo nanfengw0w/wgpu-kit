@@ -1,0 +1,122 @@
+[
+  {
+    "id": "gravitational-lens",
+    "title": "Gravitational lens",
+    "description": "Drag a point-mass lens across a galaxy atlas. Watch a spiral stretch into arcs and split into multiple images.",
+    "tags": "thin-lens equation · inverse ray mapping",
+    "param": "Relative lens mass",
+    "min": 0.25,
+    "max": 2.5,
+    "value": 1,
+    "hint": "Drag to move the lens; arrow keys make fine adjustments. Switch Lens off to compare the exact same sky. Enable the source grid to see the geometry bend.",
+    "explanation": "Each pixel traces an observed image angle back to the source atlas with the point-mass thin-lens equation: β = θ − θE²(θ − lens)/|θ − lens|². The blue spiral becomes arcs near alignment; off-axis galaxies produce a larger image and an inverted secondary image. Relative mass scales θE² at fixed distances. This dimensionless, weak-field, geometric-optics approximation uses a procedural source atlas and a tiny numerical floor at the point singularity. The crosshair marks the lens, and the constellation and grid are visual guides. It does not model strong-field black-hole optics or an accretion disk. Both views keep identical exposure and a fixed source atlas."
+  },
+  {
+    "id": "volumetric-nebula",
+    "title": "Volumetric nebula",
+    "description": "Fly through layered clouds of interstellar color, integrated along a camera ray.",
+    "tags": "volume integration · noise",
+    "param": "Cloud density",
+    "min": 0.25,
+    "max": 2.5,
+    "value": 1,
+    "hint": "Move the pointer to change the viewing direction. Density changes how light accumulates.",
+    "explanation": "Each invocation marches through a three-dimensional fractal-noise density field. Front-to-back emission and absorption accumulate into a translucent nebula. The density slider changes optical depth rather than simply adjusting brightness."
+  },
+  {
+    "id": "aurora-curtains",
+    "title": "Aurora curtains",
+    "description": "Folded ribbons of atmospheric light drape above a quiet horizon.",
+    "tags": "ray integration · atmosphere",
+    "param": "Curtain folds",
+    "min": 0.3,
+    "max": 2.5,
+    "value": 1,
+    "hint": "Move to steer the curtain. Change the fold frequency and pause the light.",
+    "explanation": "A camera ray integrates many thin emissive layers. A warped ridge field defines the auroral curtain, while altitude controls its green-to-magenta emission. This is an artistic atmospheric model."
+  },
+  {
+    "id": "ocean-caustics",
+    "title": "Ocean caustics",
+    "description": "Refracted light gathers into an intricate lattice under a moving water surface.",
+    "tags": "surface derivatives · caustics",
+    "param": "Wave sharpness",
+    "min": 0.3,
+    "max": 2,
+    "value": 1,
+    "hint": "Move to change the light direction. Sharpness controls the concentrated ridges.",
+    "explanation": "Several directional waves form a surface slope field. Its local derivative compresses light into bright caustic ridges. The result is a real-time approximation of underwater light concentration, not a full optical ray trace."
+  },
+  {
+    "id": "mandelbulb",
+    "title": "Mandelbulb explorer",
+    "description": "A rotating, self-similar three-dimensional world carved by a distance estimator.",
+    "tags": "3D fractal · raymarch",
+    "param": "Fractal power",
+    "min": 3,
+    "max": 10,
+    "value": 8,
+    "hint": "Move horizontally to orbit the fractal. Power changes the geometry itself.",
+    "explanation": "A spherical-coordinate power map iterates a three-dimensional escape-time fractal. Its distance estimate drives sphere tracing; nearby samples estimate a surface normal for lighting. Iteration and step counts are bounded for interactive rendering."
+  },
+  {
+    "id": "newton-basins",
+    "title": "Newton basins",
+    "description": "Three roots divide the complex plane into infinitely folded regions of attraction.",
+    "tags": "complex arithmetic · convergence",
+    "param": "Zoom",
+    "min": 0.5,
+    "max": 4,
+    "value": 1,
+    "hint": "Move to pan the complex plane. Zoom into the borders between the three roots.",
+    "explanation": "Each pixel applies Newton’s method to z³ − 1. The converged root selects its color; the number of iterations controls the banding. The intricate boundaries arise from convergence, not from a painted texture."
+  },
+  {
+    "id": "voronoi-glass",
+    "title": "Voronoi stained glass",
+    "description": "Moving sites tessellate the plane into luminous, irregular panes.",
+    "tags": "nearest neighbor · tessellation",
+    "param": "Cell density",
+    "min": 3,
+    "max": 14,
+    "value": 7,
+    "hint": "Move the pointer to change the light spot. Density changes the number of cells.",
+    "explanation": "A 3 × 3 search finds the nearest and second-nearest animated feature points. Their distance gap draws the leaded seams, while a hash assigns each pane a stable jewel color."
+  },
+  {
+    "id": "diffraction-aperture",
+    "title": "Diffraction aperture",
+    "description": "Coherent waves from a slit array interfere into colored diffraction bands.",
+    "tags": "complex amplitude · interference",
+    "param": "Slit count",
+    "min": 2,
+    "max": 12,
+    "value": 5,
+    "hint": "Move to alter slit spacing. The control changes how many coherent apertures contribute.",
+    "explanation": "The kernel sums complex amplitudes from a finite, equally spaced slit array for three wavelengths, then squares their magnitudes to obtain intensity. A single-slit sinc envelope modulates the result. It is a dimensionless far-field model, not a calibrated optical instrument."
+  },
+  {
+    "id": "curl-flow",
+    "title": "Curl-flow streamlines",
+    "description": "Fine threads trace a divergence-free flow field like ink stretched through water.",
+    "tags": "curl field · integration",
+    "param": "Flow complexity",
+    "min": 0.4,
+    "max": 2.2,
+    "value": 1,
+    "hint": "Move the pointer to bend the flow. Complexity changes the vector field, not chemical reactions.",
+    "explanation": "Finite differences of a scalar potential define a two-dimensional curl field. Every pixel integrates a short path through it and accumulates thin dye-like marks. This is streamline integration, distinct from the reaction-diffusion example."
+  },
+  {
+    "id": "contour-terrain",
+    "title": "Contour terrain",
+    "description": "A miniature world rises from a height field, etched with survey-like elevation lines.",
+    "tags": "height field · raymarch",
+    "param": "Relief",
+    "min": 0.3,
+    "max": 2,
+    "value": 1,
+    "hint": "Move horizontally to orbit. Relief changes the landscape’s actual elevation.",
+    "explanation": "A camera ray intersects a multi-octave height field. Finite differences estimate normals, while quantized elevation draws contour lines. The relief slider changes both the silhouette and the shadowed surface."
+  }
+]

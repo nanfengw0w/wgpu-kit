@@ -1,31 +1,27 @@
-# 邻域算法基准(自动生成)
+# Measuring compute / 计算测量
 
-> 由 `npm run bench` 生成——勿手改。最近运行:2026/9/19 15:41:55
-> 规则:同会话内对比有效;绝对值受笔记本 GPU 热节流影响,跑基准前先 nvidia-smi 确认无外部负载。
+This document describes the local benchmark procedure. It does not promise a frame rate, speedup or bundle size across devices. The README focuses on the public API and capabilities.
 
-**两种口径,不要混着读:**
-- **同步延迟**(ms/帧,及 1000/ms 的折算 fps):每帧 `tick()` 后等 GPU 跑完再计时,
-  杀死 CPU/GPU 流水线重叠——衡量单帧往返耗时的上界,适合做算法 A/B 对比。
-- **管线吞吐**(fps,3 帧在途泵送):每帧提交不等完成、在途满 3 帧排空一次,
-  量 CPU/GPU 重叠下的饱和吞吐——playground 实际帧率受显示节流,低于此值属正常。
+本文说明本地基准测量方法，不承诺跨设备帧率、加速比或包体积。README 聚焦公开 API 和实际能力。
 
-| 路径 | 同步 ms/帧 | 同步折算 fps | 管线 fps(3帧在途) |
-| --- | --- | --- | --- |
-| n2@2,000 | 3.25 | 307.7 | 582.0 |
-| n2@8,000 | 5.68 | 176.1 | 257.3 |
-| n2@16,000 | 9.97 | 100.3 | 124.0 |
-| tiled@8,000 | 4.55 | 219.8 | 309.2 |
-| tiled@16,000 | 7.63 | 131.1 | 167.3 |
-| tiled@32,000 | 17.83 | 56.1 | 71.7 |
-| tiled@66,000 | 73.22 | 13.7 | 26.0 |
-| grid@16,000 | 3.59 | 278.6 | 475.9 |
-| grid@16,000 cap=32 | 3.80 | 263.2 | 788.7 |
-| tiled@16,000 | 9.21 | 108.6 | 136.1 |
-| grid@66,000 | 14.38 | 69.5 | 106.1 |
-| grid@131,072 | 29.36 | 34.1 | 60.3 |
-| grid@200,000 | 36.25 | 27.6 | 46.6 |
-| grid@200,000 cap=8100 | 43.37 | 23.1 | 43.4 |
-| grid@200,000 cap=900 | 27.91 | 35.8 | 53.6 |
-| grid@262,144 rMax=0.05 | 10.41 | 96.1 | 91.9 |
+## Run / 运行
 
-✓ 全部探针通过
+```sh
+npm run bundle:tests
+npm run bench
+```
+
+Use a WebGPU-capable local Chrome or Edge browser. `tests/gpu/bench.ts` and `scripts/bench.mjs` are the implementation. Record device, browser, algorithm, input size and warm-up conditions with any result.
+
+使用支持 WebGPU 的本地 Chrome 或 Edge。测量实现位于 `tests/gpu/bench.ts` 和 `scripts/bench.mjs`。记录设备、浏览器、算法、输入规模及预热条件。
+
+## Interpret results / 理解结果
+
+- Synchronous latency waits for submitted GPU work after each step and includes host/GPU round-trip costs. / 同步延迟逐步等待 GPU 完成，包含主机与 GPU 往返开销。
+- The bounded in-flight pump measures completion over a sequence of submissions; it also includes host scheduling. / 有界在途测量统计一组提交的完成时间，也包含主机调度开销。
+- `ParticlesSim.stats().fps` counts `tick()` calls over elapsed host time. It does not establish completed or presented GPU frames. / `ParticlesSim.stats().fps` 统计主机时间内的 `tick()` 次数，不能等同于 GPU 完成或实际呈现帧率。
+- `timeGpu()` measures a queue interval and may include gaps and unrelated queued work. / `timeGpu()` 测量队列区间，可能包含提交间隔和其他排队工作。
+
+Compare algorithms in the same session with the same inputs. Do not copy one device's measurements into general performance claims.
+
+算法比较应在同一会话、相同输入下进行。单设备测量不能直接作为通用性能承诺。

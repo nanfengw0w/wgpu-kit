@@ -42,3 +42,11 @@ docs/validation/
 tests/gpu/*.bundle.js
 gh-pages/
 docs/assets/
+
+# Local review material
+v2-review/
+playground/qa/
+playground/dist/
+
+# Generated review media
+docs/media/frames/

@@ -1,6 +1,8 @@
+[Open the live demo](https://nanfengw0w.github.io/wgpu-kit/)
+
 # wgpu-kit API Reference
 
-> Browser GPGPU middle layer. Works in any WebGPU browser (Chrome/Edge 113+, Safari 18+). Zero runtime dependencies.
+> WebGPU compute for TypeScript. Requires a WebGPU-enabled browser. The compute core has no runtime dependencies.
 > Version: v2.0 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
 
 **Entry points**
@@ -13,6 +15,7 @@
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
 | [wgpu-kit/three](#wgpu-kitthree--threepoints) | three.js interop |
 | [wgpu-kit/media](#wgpu-kitmedia--canvasrecorder) | canvas recording |
+| [wgpu-kit/observe](#wgpu-kitobserve--observability) | timing, device callbacks and canvas helpers |
 | [wgpu-kit/vite](#wgpu-kitvite--kernel-hot-reload) | kernel hot-reload plugin |
 
 ---
@@ -53,7 +56,7 @@ Resolves when all submitted GPU work has completed. Useful before readbacks and 
 
 ##### .lost : Promise\<GPUDeviceLostInfo\> (readonly)
 
-Rejects when the device is lost.
+Resolves with the native device-loss information when the device is lost.
 
 ---
 
@@ -153,7 +156,7 @@ await integrate.run({ pos, vel }, { dt: 0.02, friction: 0.914 });
 
 // hot reload: compile-then-swap; on compile failure the old kernel is kept
 await integrate.replace(`
-  fn userFn(idx: u32, dt: f32) {
+  fn userFn(idx: u32, dt: f32, friction: f32) {
     pos[idx] = pos[idx] * 2.0;
   }
 `);
@@ -206,6 +209,8 @@ or out-of-range workgroupSize.
 ##### .run ( resources, uniforms? ) : Promise\<void\>
 
 Dispatch one step (convenience = `prepare` + `encode` + internal submit).
+The promise covers preparation and submission, not GPU completion. Use a
+readback or `GpuContext.sync()` when the CPU needs the finished result.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -295,7 +300,21 @@ submits.
 ##### .run ( entries : GPUBindGroupEntry[], workgroups : number ) : Promise\<void\>
 
 `entries` are declared entirely by you; `workgroups` is the X-dimension
-workgroup count.
+workgroup count. `run()` prepares, encodes and submits without waiting for
+GPU completion.
+
+##### .prepare ( ) : Promise\<void\>
+
+Compile the pipeline before synchronous encoding.
+
+##### .encode ( encoder : GPUCommandEncoder, entries : GPUBindGroupEntry[], workgroups : number ) : void
+
+Add a compute pass to your encoder without submitting. Call outside an open
+pass; resources and workgroup counts remain under your control.
+
+##### .destroy ( ) : void
+
+Release the cached pipeline reference; caller-owned buffers are unchanged.
 
 ### Code Example
 
@@ -362,20 +381,27 @@ import { defineSchema, elementKernel, type SchemaInfer } from 'wgpu-kit';
 const Boid = defineSchema({ pos: 'vec2f', vel: 'vec2f', species: 'u32' });
 type BoidRow = SchemaInfer<typeof Boid.fields>; // { pos: {x,y}, vel: {x,y}, species: number }
 
+const count = 1;
 const bufs = await Boid.buffers(count);
-bufs.pos.write([{ x: 1, y: 2 }]);               // typo'd key/component = compile error
-const k = elementKernel({ state: Boid.fields, code: 'fn userFn(idx: u32) { … }' });
+bufs.pos.write([{ x: 1, y: 2 }]);               // Field/component typos are type errors.
+bufs.vel.write([{ x: 0.5, y: 0 }]);
+const k = elementKernel({
+  state: Boid.fields,
+  code: 'fn userFn(idx: u32) { pos[idx] = pos[idx] + vel[idx]; }',
+});
 await k.run(bufs.raws());
-const rows = await bufs.pos.read();             // typed rows
+const rows = await bufs.pos.read();             // Typed row objects.
+k.destroy();
+bufs.destroy();
 ```
 
 ---
 
 # wgpu-kit · definePack / registerPack
 
-The pack platform: third-party simulations register through the same contract
-the built-in packs use — unified lifecycle, stats, a self-verification
-`probe()`, and a runtime registry.
+Pack registration describes a simulation's lifecycle and optional stats or
+diagnostics. `definePack` checks the name and creation function; the pack
+implementation owns its resources and correctness.
 
 ## PackSim
 
@@ -384,7 +410,7 @@ the built-in packs use — unified lifecycle, stats, a self-verification
 | `attach?(canvas)` | no | Build a renderer (canvas packs) |
 | `tick()` | yes | Advance one frame (compute + optional render) |
 | `stats?()` | no | Lightweight live stats (`{ fps }` …) |
-| `probe?()` | no | Return physics invariants — the verify harness collects and displays them |
+| `probe?()` | no | Optional application-defined diagnostics; callers invoke it explicitly |
 | `destroy()` | yes | Release all GPU resources |
 
 ## definePack ( pack ) : WgpuKitPack
@@ -409,7 +435,6 @@ const orbit = definePack({
   name: 'orbit',
   create: async (config) => ({
     tick() { /* … */ },
-    async probe() { return { energyDrift: 0.003 }; },
     destroy() { /* … */ },
   }),
 });
@@ -450,7 +475,7 @@ frame();
 | --- | --- | --- | --- |
 | count | number | Particle count (1..1,000,000) | `8192` |
 | forces | 'cells' \| 'snakes' \| 'orbitals' \| 'viruses' \| 'random' \| ForceMatrix | Force matrix preset or custom 16-number array (row = actor, col = target; positive = attract) | `'cells'` |
-| mode | 'grid' \| 'tiled' \| 'n2' | Neighborhood algorithm. grid = counting-sort spatial hash (recommended, ~O(N)); tiled = tiled brute force; n2 = full brute force (≤30k) | `'grid'` |
+| mode | 'grid' \| 'tiled' \| 'n2' | Neighborhood algorithm: counting-sort spatial grid, tiled brute force or full brute force | `'grid'` |
 | color | 'species' \| 'velocity' | Color by species or by speed | `'species'` |
 | bounds | 'wrap' \| 'clamp' | Boundary handling | `'wrap'` |
 | seed | string \| number | Random seed (spawn distribution + random matrix), reproducible | `'wgpu-kit'` |
@@ -466,9 +491,9 @@ frame();
 on species j (−1..1). Presets: `cells` (classic), `snakes`, `orbitals`,
 `viruses` (predation), `random` (generated from the seed).
 
-**World scaling**: the world area grows proportionally with `count` (density
-locked to the 16k level) and the camera zooms out — any scale produces the
-same per-particle physics.
+**Adaptive world:** world size scales with `count` to keep the initial mean
+density comparable. Actual neighbor counts and query costs depend on the
+particle distribution, interaction radius and grid occupancy.
 
 ## Properties
 
@@ -494,17 +519,18 @@ Hot-swaps the force matrix (preset name or custom array) — no rebuild.
 ##### .setParams ( params ) : void
 
 Hot-updates physics `{ rMax?, beta?, forceFactor?, frictionHalfLife?, dt? }`.
-Note: changing `rMax` in grid mode triggers a grid rebuild (~100ms).
+Note: changing `rMax` in grid mode triggers a grid rebuild.
 
 ##### .snapshot ( ) : string
 
-Serializes the configuration as JSON — interoperates with the playground's
-`?p=…&m=…&s=…` URL parameters for sharing.
+Serializes the configuration as JSON for saving or sharing. Applications own
+their URL format and must translate it into the configuration explicitly.
 
 ##### .stats ( ) : { fps : number; gpuErrors : number }
 
-Runtime stats. `gpuErrors > 0` means GPU validation errors occurred (check
-this first when diagnosing a black canvas).
+Runtime stats. `fps` counts calls to `tick()` over a rolling interval; it is
+not a GPU-completion or presentation measurement. `gpuErrors > 0` means GPU
+validation errors occurred.
 
 ##### .buffers ( ) : { pos, vel, species }
 
@@ -568,8 +594,8 @@ WebGPU).
 | .update ( ) | Promise\<void\> | Sync one position snapshot (call before rendering) |
 | .dispose ( ) | void | Release (also destroys the sim) |
 
-Zero-copy TSL interop is on the roadmap; the snapshot mode costs one
-readback per frame (millisecond-scale) — fine for small/medium counts.
+The snapshot mode reads positions back to the CPU and updates three.js
+attributes. Choose an update frequency appropriate for your application.
 
 ---
 
@@ -618,8 +644,8 @@ setTimeout(async () => {
 
 # wgpu-kit/vite · kernel hot reload
 
-Vite plugin + client helper: saving a WGSL file triggers `kernel.replace()`
-within milliseconds (compile failures keep the old kernel).
+Vite plugin + client helper: saving a WGSL file triggers `kernel.replace()`.
+Compile failures keep the old kernel.
 
 ## Constructor
 
@@ -652,7 +678,7 @@ All errors extend `WgpuKitError`:
 
 | error | thrown when | guidance |
 | --- | --- | --- |
-| `WebGPUUnavailableError` | No WebGPU / no adapter | Point users at the `detect.html` page |
+| `WebGPUUnavailableError` | No WebGPU / no adapter | Handle initialization failure and explain the WebGPU requirement |
 | `CompileError` | WGSL compilation failed | Message contains **your code's line numbers**; hot reload keeps the old kernel |
 | `UsageError` | Argument mismatch (type / length / missing field) | Fix the call per the message |
 
@@ -662,27 +688,11 @@ this counter first**.
 
 ---
 
-# Performance & limits
-
-| item | value | environment |
-| --- | --- | --- |
-| particles end-to-end | 200,000 @ 142fps | RTX 4060 Laptop, playground |
-| particle compute (grid) | 131k @ 0.89ms/frame | same, headless bench |
-| neighborhood algorithms | grid ~O(N), 8.5× faster than brute force at 66k | same-session A/B |
-| bundle size | core gzip 5.5kB; +particles 10.3kB | gzip |
-
-Full data and repro commands: see the repository benchmarks page. **Scaling
-tip**: as `count` grows, keep the world density constant (handled
-automatically) and consider lowering `rMax` — the radius determines the
-neighbor count, which dominates the cost.
-
----
-
 # wgpu-kit/grid · generic spatial neighborhood
 
-Counting-sort spatial hash extracted from the particles pack. Any simulation
-that needs "find my neighbors" (SPH fluids / collision / clustering) can use
-it. Measured 8.5× over brute force, ~O(N).
+Counting-sort spatial grid for 2D positions. Cell ranges and ordered entity
+indices remain in GPU buffers for subsequent neighbor kernels. Query cost
+depends on cell occupancy and the interaction radius.
 
 ## Constructor
 
@@ -724,27 +734,57 @@ grid.update(posBuffer);
 
 # wgpu-kit · createScan / createReduce
 
-Verified parallel primitives (v2.0): u32 prefix scan (dual-tier: single
-workgroup ≤65536, three-pass pipeline above — every path bitwise-checked
-against a CPU reference) and u32 reduction (`sumInto` keeps the result on the
-GPU; `sum` is the readback convenience). Both follow the same encode-once
-contract as kernels — encode once per submit, `endSubmit()` re-arms.
+u32 prefix scan uses a single-workgroup path up to 65536 elements and a
+three-pass pipeline above that. u32 reduction exposes `sumInto` for a
+GPU-resident result and `sum` for a CPU readback. Both follow the same encode-once
+contract as kernels: encode once per submit, then call `endSubmit()`.
+
+### Methods
+
+| Method | Behavior |
+| --- | --- |
+| `scan.prepare()` / `reduce.prepare()` | Async pipeline setup; complete before encoding |
+| `scan.encode(encoder, src, dst, count, exclusive = true)` | Write a u32 prefix scan into GPUBuffer `dst` |
+| `scan.run(src, dst, count, exclusive = true)` | Buffer-based convenience path with an internal submit |
+| `reduce.sumInto(encoder, src, count, dst)` | Write a u32 sum into GPUBuffer `dst` without readback |
+| `reduce.sum(src, count)` | Return the sum as a JavaScript number after readback |
+| `endSubmit()` | Re-arm that instance after a caller-owned submit |
+| `destroy()` | Release internal buffers and cached pipeline references |
+
+Encoding methods take native GPUBuffer handles; `run` and `sum` take wgpu-kit
+Buffers. Call encoding methods outside an open pass. Sums use u32 arithmetic.
+
+### GPU-resident example
 
 ```ts
-import { Buffer, createScan, createReduce } from 'wgpu-kit';
+import { Buffer, GpuContext, createScan, createReduce } from 'wgpu-kit';
+
+const count = 1024;
+const src = await Buffer.create('u32', count);
+const prefix = await Buffer.create('u32', count);
+const total = await Buffer.create('u32', 1);
+src.write(Uint32Array.from({ length: count }, (_, i) => i));
 
 const scan = createScan();
-await scan.prepare();
-const src = await Buffer.create('u32', 100_000);
-const dst = await Buffer.create('u32', 100_000);
-src.write(new Uint32Array(100_000).map((_, i) => i));
-await scan.run(src, dst, 100_000, true);      // exclusive prefix sum
-const prefix = (await dst.read()) as Uint32Array;
-prefix[3]; // = 0+1+2 = 3
-
 const reduce = createReduce();
+await scan.prepare();
 await reduce.prepare();
-const sum = await reduce.sum(src, 100_000);   // convenience readback (Σ)
+const { device } = await GpuContext.get();
+const encoder = device.createCommandEncoder();
+
+scan.encode(encoder, src.gpuBuffer, prefix.gpuBuffer, count, true);
+reduce.sumInto(encoder, prefix.gpuBuffer, count, total.gpuBuffer);
+device.queue.submit([encoder.finish()]);
+scan.endSubmit();
+reduce.endSubmit();
+
+// Only the final result crosses back to the CPU.
+console.log(await total.read());
+scan.destroy();
+reduce.destroy();
+src.destroy();
+prefix.destroy();
+total.destroy();
 ```
 
 Dispatch limits follow the WebGPU spec — validated up front with clear
@@ -755,15 +795,15 @@ count ≤ 8192 × 65535 (`reduce`).
 
 # wgpu-kit/observe · observability
 
-GPU timing, device diagnostics and canvas helpers — the runtime counterpart
-of the published benchmark numbers.
+GPU timing, device callbacks and canvas helpers.
 
 ## timeGpu
 
 ##### timeGpu ( fn : (ctx) => void | Promise<void> ) : Promise<number>
 
-Measures real GPU milliseconds spent inside `fn` using timestamp queries
-(Chrome/Edge). Rejects with `UsageError` when the device lacks the feature.
+Measures the GPU timestamp interval around work submitted by `fn`, including
+gaps between submissions. This is not the sum of individual compute-pass
+durations. Rejects with `UsageError` if the device lacks `timestamp-query`.
 
 ### Code Example
 
@@ -779,10 +819,10 @@ console.log(`GPU: ${ms.toFixed(2)} ms/frame`);
 
 ##### watchDevice ( opts : { onError?, onRebuild? } ) : void
 
-Registers error/loss callbacks on the shared device and **automatically
-rebuilds the context** when the GPU device is lost — essential for
-long-running pages (installations, dashboards). `onError(message, recoverable)`
-fires for validation errors (recoverable) and device loss (not).
+Registers error/loss callbacks on the shared device. After device loss it
+tries to obtain a new context and calls `onRebuild` if successful. Applications
+must recreate their own buffers, kernels and renderers for the new device.
+`onError(message, recoverable)` reports validation errors and device loss.
 
 ---
 

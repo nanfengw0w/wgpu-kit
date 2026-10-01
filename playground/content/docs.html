@@ -1,0 +1,214 @@
+<section id="getting-started">
+<h2>Getting started</h2>
+<p>wgpu-kit is a TypeScript toolkit for browser GPU computation. Use the core APIs to allocate storage, write a per-element WGSL function, and compose compute work with your own WebGPU renderer.</p>
+<p>Install the published package in your application:</p>
+<pre><code>npm install wgpu-kit@2.0.1</code></pre>
+<p>Run this in a browser module served over HTTPS or localhost. The first allocation requests a GPU device. This complete example scales four values and reads the result back:</p>
+<pre><code>import { Buffer, elementKernel } from 'wgpu-kit';
+
+const values = await Buffer.create('f32', 4);
+values.write(new Float32Array([1, 2, 3, 4]));
+
+const scale = elementKernel({
+  state: { values: 'f32' },
+  uniforms: { gain: 'f32' },
+  code: `fn userFn(i: u32, gain: f32) {
+    values[i] *= gain;
+  }`,
+});
+
+await scale.run({ values }, { gain: 3 });
+console.log(Array.from(await values.read()));
+// [3, 6, 9, 12]
+
+scale.destroy();
+values.destroy();</code></pre>
+<div class="callout"><p>A compute kernel does not draw by itself. This site’s examples use native WebGPU render passes to display their computed storage buffers. See <a href="/examples/wave-field/">Wave interference</a> for a working compute-to-canvas example.</p></div>
+</section>
+<section id="kernels">
+<h2>Element kernels</h2>
+<p><code>elementKernel(spec)</code> wraps a per-element WGSL function. The function must be named <code>userFn</code>; its first argument is the element index. The library generates bindings, uniform layout, the compute entry point, and bounds-checked dispatch.</p>
+<ul><li><code>state</code> declares read/write storage arrays</li><li><code>inputs</code> declares read-only storage arrays</li><li><code>uniforms</code> declares the values passed to each invocation</li><li><code>code</code> contains your WGSL, including helper functions</li></ul>
+<pre><code>const integrate = elementKernel({
+  state: { position: 'vec2f' },
+  inputs: { velocity: 'vec2f' },
+  uniforms: { dt: 'f32' },
+  code: `fn userFn(i: u32, dt: f32) {
+    position[i] += velocity[i] * dt;
+  }`,
+});
+
+await integrate.run({ position, velocity }, { dt: 0.016 });</code></pre>
+<p>Resource keys and types must match the declaration. All resources supplied to a single element kernel must have the same element count. Pass vector uniforms as objects such as <code>{ x: 0.5, y: 0.5 }</code>.</p>
+<p><code>run()</code> prepares, encodes, and submits for you. For frame-level control, use <code>prepare()</code> and <code>encode()</code>. WGSL compilation diagnostics map back to your function’s lines; the schema layer does not type-check the WGSL function body.</p>
+<div class="callout"><p>For neighborhood operations, use separate read and write buffers. Writing in-place while another invocation reads a neighbor can create races. <a href="#ping-pong">PingPong</a> makes this separation explicit.</p></div>
+</section>
+<section id="buffers">
+<h2>GPU buffers</h2>
+<p><code>Buffer.create(kind, length)</code> allocates typed GPU storage. <code>length</code> counts logical elements, not bytes. The library handles the underlying stride and padding.</p>
+<pre><code>import { Buffer } from 'wgpu-kit';
+
+const points = await Buffer.create('vec2f', 2);
+points.write(new Float32Array([0, 1, 2, 3]));
+const flatValues = await points.read();
+const nativeStorage = points.gpuBuffer;
+points.destroy();</code></pre>
+<p>Supported kinds include scalar <code>f32</code>, <code>i32</code>, <code>u32</code>, two-component float/integer vectors, and <code>vec3f</code>/<code>vec4f</code>. Write a flat typed array with the correct component count. Use <code>TypedBuffer</code> or schemas for object-shaped rows.</p>
+<p><code>read()</code> intentionally copies data back to the CPU and waits for a mapped staging buffer. Keep intermediate data on the GPU when you do not need to inspect it.</p>
+<div class="callout"><p>The native buffer is storage-backed. This site’s renderer reads it with <code>var&lt;storage, read&gt;</code> in a vertex or fragment shader. Do not assume a kit buffer was allocated with the WebGPU <code>VERTEX</code> usage flag.</p></div>
+</section>
+<section id="schemas">
+<h2>Typed schemas</h2>
+<p>Declare a field table once to connect TypeScript rows, generated WGSL structs, and GPU buffer allocation.</p>
+<pre><code>import { defineSchema } from 'wgpu-kit';
+import type { SchemaInfer } from 'wgpu-kit';
+
+const Vertex = defineSchema({
+  position: 'vec3f',
+  normal: 'vec3f',
+});
+type VertexRow = SchemaInfer&lt;typeof Vertex.fields&gt;;
+
+const buffers = await Vertex.buffers(2);
+buffers.position.write([
+  { x: 0, y: 0, z: 0 },
+  { x: 1, y: 0, z: 0 },
+]);
+
+const resources = buffers.raws();
+const wgsl = Vertex.wgslStruct('Vertex');
+buffers.destroy();</code></pre>
+<p><code>buffers()</code> creates a separate typed buffer for each field. <code>raws()</code> exposes the keyed raw Buffer objects expected by element kernels. <code>SchemaInfer</code> gives you TypeScript field/value types; it does not turn arbitrary WGSL into TypeScript-checked code.</p>
+</section>
+<section id="ping-pong">
+<h2>Ping-pong state</h2>
+<p>Simulations commonly read a complete previous state while producing the next. <code>PingPong</code> owns two matching sets of buffers and exposes <code>current</code>, <code>other</code>, and <code>swap()</code>.</p>
+<pre><code>import { PingPong, elementKernel } from 'wgpu-kit';
+
+const state = await PingPong.create({ value: 'f32' }, 4);
+state.current.value.write(new Float32Array([1, 2, 3, 4]));
+
+const step = elementKernel({
+  state: { next: 'f32' },
+  inputs: { previous: 'f32' },
+  code: `fn userFn(i: u32) {
+    next[i] = previous[i] * 0.99;
+  }`,
+});
+
+await step.run({
+  next: state.other.value,
+  previous: state.current.value,
+});
+state.swap();
+// state.current now refers to the freshly written side.</code></pre>
+<p>After swapping, use the new current side for rendering or the next step. Destroy both the kernel and the PingPong allocation when the application is done. See the <a href="/examples/reaction-diffusion/">reaction-diffusion example</a> for a two-component neighborhood simulation.</p>
+</section>
+<section id="composition">
+<h2>Compose a frame</h2>
+<p>Version 2 separates pipeline preparation from command encoding. Prepare outside the frame loop, encode distinct kernels into one command encoder, append your own rendering passes, and submit once.</p>
+<pre><code>import { Buffer, GpuContext, elementKernel } from 'wgpu-kit';
+
+const { device } = await GpuContext.get();
+const input = await Buffer.create('f32', 4);
+const intermediate = await Buffer.create('f32', 4);
+const output = await Buffer.create('f32', 4);
+input.write(new Float32Array([1, 2, 3, 4]));
+
+const scale = elementKernel({
+  state: { scaled: 'f32' },
+  inputs: { source: 'f32' },
+  uniforms: { gain: 'f32' },
+  code: `fn userFn(i: u32, gain: f32) {
+    scaled[i] = source[i] * gain;
+  }`,
+});
+const limit = elementKernel({
+  state: { limited: 'f32' },
+  inputs: { scaled: 'f32' },
+  uniforms: { maximum: 'f32' },
+  code: `fn userFn(i: u32, maximum: f32) {
+    limited[i] = min(scaled[i], maximum);
+  }`,
+});
+
+await Promise.all([scale.prepare(), limit.prepare()]);
+const encoder = device.createCommandEncoder();
+scale.encode(encoder, { scaled: intermediate, source: input }, { gain: 3 });
+limit.encode(encoder, { limited: output, scaled: intermediate }, { maximum: 8 });
+device.queue.submit([encoder.finish()]);
+scale.endSubmit();
+limit.endSubmit();
+
+console.log(Array.from(await output.read())); // [3, 6, 8, 8]
+scale.destroy(); limit.destroy();
+input.destroy(); intermediate.destroy(); output.destroy();</code></pre>
+<div class="callout"><p>Call <code>encode()</code> at most once per element-kernel instance before submitting. Its uniforms are shared state, so encoding that same instance twice could overwrite the first parameter set; the library rejects this. Call <code>endSubmit()</code> after your custom submission. Use separate instances or separate submissions for repeated dispatches.</p></div>
+<p>For full control of bindings and entry points, <code>rawKernel()</code> accepts complete WGSL. It also exposes prepare/encode/run, with bind-group entries and workgroup counts supplied by the caller.</p>
+<p>The <a href="/examples/sculpted-ribbon/">sculpted ribbon</a> composes wave propagation, geometry generation, normal calculation, and a native render pass. There is no intermediate CPU readback.</p>
+</section>
+<section id="shared-device">
+<h2>Share an existing device</h2>
+<p>If your application already owns a GPUDevice, adopt it before the first wgpu-kit context request or allocation:</p>
+<pre><code>import { GpuContext, Buffer } from 'wgpu-kit';
+
+GpuContext.adopt(existingDevice);
+const storage = await Buffer.create('vec4f', vertexCount);
+
+// Bind storage.gpuBuffer in a native storage binding.
+// The allocation uses your existing device.</code></pre>
+<p><code>GpuContext.adopt()</code> installs the caller-owned device as the library context. It must run before <code>GpuContext.get()</code> or anything that initializes the singleton. Replacing an already-initialized context is rejected.</p>
+<p>Check native WebGPU usage flags and limits when integrating a renderer. Sharing a GPUDevice does not automatically make every higher-level rendering adapter zero-copy.</p>
+</section>
+<section id="primitives">
+<h2>Scan and reduce</h2>
+<p>The core package includes u32 exclusive/inclusive prefix scans and sum reductions. The convenient run paths submit internally; the encode paths let you compose them with your own work.</p>
+<pre><code>import { Buffer, createScan, createReduce } from 'wgpu-kit';
+
+const data = new Uint32Array([3, 1, 4, 1, 5, 9, 2, 6]);
+const input = await Buffer.create('u32', data.length);
+const output = await Buffer.create('u32', data.length);
+input.write(data);
+
+const scan = createScan();
+await scan.run(input, output, data.length, true);
+const prefix = await output.read();
+// [0, 3, 4, 8, 9, 14, 23, 25]
+
+const reduce = createReduce();
+const total = await reduce.sum(input, data.length); // 31
+scan.destroy(); reduce.destroy();
+input.destroy(); output.destroy();</code></pre>
+<p>An exclusive scan excludes the current element; passing <code>false</code> selects an inclusive scan. Arithmetic wraps as u32. <code>createReduce().sum()</code> reads the total back to JavaScript; <code>sumInto()</code> writes it into a caller-provided GPU buffer.</p>
+<p>For custom submissions, prepare first, then use <code>scan.encode(encoder, src, dst, count, exclusive)</code> or <code>reduce.sumInto(encoder, src, count, dst)</code> with native GPUBuffer handles. These instances also have an encode-once guard; reset it with <code>endSubmit()</code> after submission.</p>
+<p><a href="/examples/prefix-sum/">Try the live GPU calculator →</a></p>
+</section>
+<section id="api-reference">
+<h2>Core API reference</h2><div class="callout"><p><a href="/docs/api/">Open the complete public API reference →</a></p><p>Browse every public entry point, signature, parameter, return value, and verified implementation constraint.</p></div>
+<p>Quick lookup for the APIs used in this site. All imports below come from the root <code>wgpu-kit</code> package.</p>
+<table><thead><tr><th>API</th><th>Purpose</th><th>Main operations</th></tr></thead><tbody>
+<tr><td><code>GpuContext</code></td><td>Shared device context</td><td>get, adopt, device, sync, lost</td></tr>
+<tr><td><code>Buffer</code></td><td>Typed GPU storage</td><td>create, write, read, gpuBuffer, destroy</td></tr>
+<tr><td><code>elementKernel</code></td><td>Per-element WGSL compute</td><td>prepare, encode, endSubmit, run, replace, destroy</td></tr>
+<tr><td><code>rawKernel</code></td><td>Caller-owned WGSL bindings</td><td>prepare, encode, run, destroy</td></tr>
+<tr><td><code>PingPong</code></td><td>Two matching buffer sets</td><td>create, current, other, swap, runWith, destroy</td></tr>
+<tr><td><code>defineSchema</code></td><td>A shared typed field table</td><td>fields, buffers, wgslStruct</td></tr>
+<tr><td><code>TypedBuffer</code></td><td>Object-shaped buffer rows</td><td>create, write, read, raw, destroy</td></tr>
+<tr><td><code>createScan</code></td><td>u32 prefix sums</td><td>prepare, encode, endSubmit, run, destroy</td></tr>
+<tr><td><code>createReduce</code></td><td>u32 sum reduction</td><td>prepare, sumInto, endSubmit, sum, destroy</td></tr>
+</tbody></table>
+<p>Core errors include <code>CompileError</code>, <code>UsageError</code>, and <code>WebGPUUnavailableError</code>. Handle failures around initialization and prepare/run calls, and monitor device loss in long-lived applications.</p>
+</section>
+<section id="browser-support">
+<h2>Browser support</h2>
+<p>Live examples require <code>navigator.gpu</code>, a compatible adapter/device, and a secure context: HTTPS in production or localhost in development. Availability depends on browser version, operating system, hardware, drivers, and device policy.</p>
+<ul><li>Use a browser with WebGPU enabled and hardware acceleration available</li><li>If device creation fails, check your browser’s GPU status and driver configuration</li><li>Handle device loss and surface a useful error rather than silently replacing GPU results</li><li>Reduce workload or resolution on lower-powered devices</li></ul>
+<p>This site shows an explicit error when WebGPU cannot start. It does not substitute a Canvas 2D animation or invented performance counter. Reduced-motion users get an initially quiet scene, with explicit controls to resume.</p>
+</section>
+<section id="release">
+<h2>Release and source</h2>
+<p>This site bundles the local <code>wgpu-kit@2.0.1</code> package built from this repository.</p>
+<p>The imported API documentation was audited against the published <code>wgpu-kit@2.0.0</code> npm package. At verification on September 30, 2026, npm latest and the repository’s default branch matched commit <code>306a7a7</code>.</p>
+<p>The custom ribbon, fields, image pipeline, and numeric tools are original application examples of the core APIs. Their source is available on the individual example pages and in the complete site download.</p>
+<ul><li><a href="https://github.com/nanfengw0w/wgpu-kit/tree/306a7a7233c9de8b433d179ed1164482143a4989" target="_blank" rel="noopener">Verified library source</a></li><li><a href="https://www.npmjs.com/package/wgpu-kit/v/2.0.0" target="_blank" rel="noopener">Published npm package</a></li><li><a href="https://github.com/nanfengw0w/wgpu-kit/archive/refs/heads/main.zip">Download this site’s complete source</a></li><li><a href="/assets/THIRD-PARTY-NOTICES.txt">Licenses and notices</a></li></ul>
+</section>

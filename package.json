@@ -1,7 +1,7 @@
 {
   "name": "wgpu-kit",
-  "version": "2.0.0",
-  "description": "Creative-coding GPU toolkit for the browser. 200k-particle physics at 120fps in 5 lines of code. WebGPU compute without the boilerplate.",
+  "version": "2.0.1",
+  "description": "Composable WebGPU compute for the browser, with GPU-resident data and zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -59,22 +59,29 @@
     "dist"
   ],
   "scripts": {
-    "dev": "vite playground",
+    "dev": "node playground/scripts/dev.mjs",
     "build": "node scripts/build.mjs",
-    "build:playground": "vite build playground",
+    "build:playground": "node playground/scripts/build.mjs",
+    "check:playground": "tsc -p playground/tsconfig.json --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "bundle:tests": "esbuild tests/gpu/smoke.ts --bundle --format=esm --outfile=tests/gpu/smoke.bundle.js --log-level=warning && esbuild tests/gpu/bench.ts --bundle --format=esm --outfile=tests/gpu/bench.bundle.js --log-level=warning && esbuild tests/gpu/grid-debug.ts --bundle --format=esm --outfile=tests/gpu/grid-debug.bundle.js --log-level=warning && esbuild tests/gpu/primitives.ts --bundle --format=esm --outfile=tests/gpu/primitives.bundle.js --log-level=warning && esbuild tests/gpu/ngrid.ts --bundle --format=esm --outfile=tests/gpu/ngrid.bundle.js --log-level=warning",
     "verify": "node scripts/verify.mjs",
-    "prepublishOnly": "npm run build && node scripts/audit-exports.mjs",
+    "audit:exports": "node scripts/audit-exports.mjs",
+    "audit:package": "node scripts/audit-package.mjs",
+    "prepublishOnly": "npm run build && npm run audit:package",
     "bench": "node scripts/bench.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/prismjs": "1.26.5",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@webgpu/types": "^0.1.64",
     "esbuild": "^0.28.0",
+    "prettier": "3.6.2",
+    "prettier-plugin-wgsl": "0.1.13",
+    "prismjs": "1.30.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.6.0",

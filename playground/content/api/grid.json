@@ -1,0 +1,370 @@
+{
+  "version": "2.0.0",
+  "verifiedAgainst": "Installed npm package declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989",
+  "entrypoints": [
+    {
+      "path": "wgpu-kit/grid",
+      "summary": {
+        "en": "Reusable 2D GPU spatial indexing with caller-controlled command submission.",
+        "zh": "支持调用方控制命令提交的可复用二维 GPU 空间索引。"
+      },
+      "exports": [
+        {
+          "name": "createNeighborGrid",
+          "kind": "function",
+          "signature": "createNeighborGrid(config: NeighborGridConfig): Promise<NeighborGrid>",
+          "description": {
+            "en": "Allocate and prepare a two-dimensional count/sort neighbor-grid index.",
+            "zh": "分配并准备二维计数/排序邻域网格索引。"
+          },
+          "parameters": [
+            {
+              "name": "config",
+              "type": "NeighborGridConfig",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Grid dimensions and entity count; every field is specified below.",
+                "zh": "网格尺寸和实体数量，各字段见下方。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "Promise<NeighborGrid>",
+            "description": {
+              "en": "Ready grid with owned u32 index buffers. The input position buffer remains caller-owned.",
+              "zh": "已就绪的网格，拥有自己的 u32 索引缓冲；输入位置缓冲仍由调用者拥有。"
+            }
+          },
+          "errors": [
+            {
+              "en": "Throws plain Error for non-positive/non-integer count or cellSize not greater than zero. Allocation/context errors and CompileError can reject. worldHalf/workgroupSize and buffer/device-size feasibility are not fully validated.",
+              "zh": "count 非正整数或 cellSize 不大于 0 时抛出普通 Error。上下文/分配错误和 CompileError 也可能导致拒绝。不全面验证 worldHalf、workgroupSize 或缓冲/设备尺寸是否可行。"
+            }
+          ],
+          "constraints": [
+            {
+              "en": "Factory already prepares the internal scan and pipelines. Explicit prepare() is idempotent and useful in generic composed workflows.",
+              "zh": "工厂已经准备内部 scan 和管线；显式 prepare() 幂等，可用于统一的组合工作流。"
+            },
+            {
+              "en": "Positions outside the square are assigned to edge cells by clamping. This is not a toroidal/wrapping neighbor index. Cell order is sorted; order within a cell is not promised stable.",
+              "zh": "方形范围外的位置通过 clamp 归入边缘格子；这不是环绕世界的邻域索引。格子之间有序，但不保证格内实体顺序稳定。"
+            },
+            {
+              "en": "Do not assume a 3×3 neighborhood covers your radius: ceil-based subdivision can make cells smaller than cellSize. Compute the search radius in cells from actual width.",
+              "zh": "不要直接假设 3×3 邻域覆盖交互半径：ceil 分格可能使实际格宽小于 cellSize，应根据实际格宽计算搜索格数。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { Buffer, GpuContext } from 'wgpu-kit';\nimport { createNeighborGrid } from 'wgpu-kit/grid';\nconst pos = await Buffer.create('vec2f', 3);\npos.write(new Float32Array([-0.5, 0, 0, 0, 0.5, 0]));\nconst grid = await createNeighborGrid({ count: 3, worldHalf: 1, cellSize: 0.25 });\nawait grid.prepare();\nconst ctx = await GpuContext.get();\nconst encoder = ctx.device.createCommandEncoder();\ngrid.encode(encoder, pos);\n// Encode downstream consumers of grid.cellStart/cellFill/order here.\nctx.device.queue.submit([encoder.finish()]);\ngrid.endSubmit();\nconst starts = await grid.cellStart.read();\nconst ends = await grid.cellFill.read();\nconst order = await grid.order.read();\nconsole.log(starts, ends, order);\ngrid.destroy();\npos.destroy();",
+              "caption": {
+                "en": "Build a grid in a caller-owned command encoder and read its index.",
+                "zh": "在调用方的 command encoder 内建格，并读回索引。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "NeighborGridConfig",
+          "kind": "interface",
+          "signature": "interface NeighborGridConfig { count: number; worldHalf: number; cellSize: number; workgroupSize?: number; }",
+          "description": {
+            "en": "Configuration accepted by createNeighborGrid.",
+            "zh": "createNeighborGrid 的配置。"
+          },
+          "parameters": [
+            {
+              "name": "count",
+              "type": "number",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Positive integer entity count. The supplied position buffer must contain this many vec2f elements.",
+                "zh": "实体数量，必须为正整数。输入位置缓冲应含这么多个 vec2f 元素。"
+              }
+            },
+            {
+              "name": "worldHalf",
+              "type": "number",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Half-width of the square world on each axis, nominally [-worldHalf, worldHalf]. Use a finite positive value; 2.0.0 does not validate it.",
+                "zh": "每轴方形世界的半宽，范围通常为 [-worldHalf, worldHalf]。应使用有限正数；2.0.0 不验证此值。"
+              }
+            },
+            {
+              "name": "cellSize",
+              "type": "number",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Requested cell size. gridSize=max(1, ceil(2*worldHalf/cellSize)), so actual cell width is 2*worldHalf/gridSize and can be smaller.",
+                "zh": "请求的格子尺寸。gridSize=max(1, ceil(2*worldHalf/cellSize))，因此实际格宽为 2*worldHalf/gridSize，可能比请求值小。"
+              }
+            },
+            {
+              "name": "workgroupSize",
+              "type": "number",
+              "required": false,
+              "default": "64",
+              "description": {
+                "en": "Declared configuration option but ignored by 2.0.0 implementation; shader and dispatch both use the fixed value 64.",
+                "zh": "声明中的配置项，但 2.0.0 实现未使用它；shader 和 dispatch 都固定使用 64。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "NeighborGrid",
+          "kind": "interface",
+          "signature": "interface NeighborGrid",
+          "description": {
+            "en": "Owned grid buffers and operations; destroy them when finished.",
+            "zh": "网格拥有的缓冲及操作；结束使用后销毁。"
+          },
+          "members": [
+            {
+              "name": "gridSize",
+              "kind": "readonly property",
+              "signature": "readonly gridSize: number",
+              "description": {
+                "en": "Number of cells on each axis: max(1, ceil(2*worldHalf/cellSize)).",
+                "zh": "每轴格子数：max(1, ceil(2*worldHalf/cellSize))。"
+              },
+              "returns": {
+                "type": "number",
+                "description": {
+                  "en": "Fixed at creation.",
+                  "zh": "创建时固定。"
+                }
+              }
+            },
+            {
+              "name": "cells",
+              "kind": "readonly property",
+              "signature": "readonly cells: number",
+              "description": {
+                "en": "Total cell count, gridSize × gridSize.",
+                "zh": "总格子数，即 gridSize × gridSize。"
+              },
+              "returns": {
+                "type": "number",
+                "description": {
+                  "en": "Length of cellStart and cellFill.",
+                  "zh": "cellStart 和 cellFill 的长度。"
+                }
+              }
+            },
+            {
+              "name": "cellStart",
+              "kind": "property",
+              "signature": "cellStart: Buffer",
+              "description": {
+                "en": "Owned u32 buffer of exclusive starting slots per cell.",
+                "zh": "各格子独占起始槽位，网格拥有的 u32 缓冲。"
+              },
+              "returns": {
+                "type": "Buffer",
+                "description": {
+                  "en": "cells elements; use cellStart[c] as the inclusive start in order.",
+                  "zh": "含 cells 个元素；cellStart[c] 是 order 中的包含式起点。"
+                }
+              }
+            },
+            {
+              "name": "cellFill",
+              "kind": "property",
+              "signature": "cellFill: Buffer",
+              "description": {
+                "en": "Owned u32 buffer of exclusive ending slots after scatter.",
+                "zh": "scatter 后各格子的排他终止槽位，网格拥有的 u32 缓冲。"
+              },
+              "returns": {
+                "type": "Buffer",
+                "description": {
+                  "en": "cells elements. Members of cell c occupy order[cellStart[c]..cellFill[c]); this value is not the occupancy count.",
+                  "zh": "含 cells 个元素。格子 c 的成员位于 order[cellStart[c]..cellFill[c])；此值不是格内数量。"
+                }
+              }
+            },
+            {
+              "name": "order",
+              "kind": "property",
+              "signature": "order: Buffer",
+              "description": {
+                "en": "Owned u32 entity-index buffer, grouped by cell.",
+                "zh": "按格子分组的实体下标，网格拥有的 u32 缓冲。"
+              },
+              "returns": {
+                "type": "Buffer",
+                "description": {
+                  "en": "count elements; order[slot] is the original entity index.",
+                  "zh": "含 count 个元素；order[slot] 是原始实体下标。"
+                }
+              }
+            },
+            {
+              "name": "prepare",
+              "kind": "method",
+              "signature": "prepare(): Promise<void>",
+              "description": {
+                "en": "Idempotently prepare the internal scan.",
+                "zh": "幂等地准备内部 scan。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "Promise<void>",
+                "description": {
+                  "en": "Resolves when encoding dependencies are ready.",
+                  "zh": "编码所需依赖就绪时完成。"
+                }
+              }
+            },
+            {
+              "name": "encode",
+              "kind": "method",
+              "signature": "encode(encoder: GPUCommandEncoder, pos: Buffer): void",
+              "description": {
+                "en": "Append counts → scan → post → scatter passes to the caller encoder.",
+                "zh": "向调用者 encoder 追加 counts → scan → post → scatter pass。"
+              },
+              "parameters": [
+                {
+                  "name": "encoder",
+                  "type": "GPUCommandEncoder",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Unfinished encoder from the shared device. No active pass may lock it. The method does not submit or finish it.",
+                    "zh": "来自共享设备、尚未完成的 encoder。不能被未结束的 pass 占用；方法不会自动 finish 或提交。"
+                  }
+                },
+                {
+                  "name": "pos",
+                  "type": "Buffer",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Caller-owned vec2f storage buffer with count positions on the same device. No dedicated kind/length validation is performed here.",
+                    "zh": "调用者拥有、同一设备上的 vec2f storage 缓冲，含 count 个位置。此处没有专门的 kind/length 校验。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "One encode per grid instance per submission: submit, then call endSubmit(). Downstream passes in the same encoder can consume the resulting index without CPU readback.",
+                  "zh": "每次提交前同一网格实例只能 encode 一次：提交后调用 endSubmit()。同一 encoder 的后续 pass 可直接消费索引，无需 CPU 读回。"
+                },
+                {
+                  "en": "The internal scan guard can throw after the initial counts pass has already been recorded on an invalid repeated call. Discard that encoder rather than submitting a partial failed build.",
+                  "zh": "重复调用违规时，内部 scan 防护可能在 counts pass 已写入后才抛错。应丢弃该 encoder，避免提交失败的部分建格。"
+                }
+              ],
+              "errors": [
+                {
+                  "en": "Propagates scan UsageError for repeated encoding and WebGPU validation/device errors for incompatible resources or encoder state.",
+                  "zh": "重复编码时传播 scan 的 UsageError；资源或 encoder 状态不兼容时产生 WebGPU 校验/设备错误。"
+                }
+              ]
+            },
+            {
+              "name": "endSubmit",
+              "kind": "method",
+              "signature": "endSubmit(): void",
+              "description": {
+                "en": "Reset the internal scan encode-once guard after an actual queue submission.",
+                "zh": "实际队列提交后重置内部 scan 的单次编码防护。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Does not submit or wait for completion. Calling early bypasses the intended lifecycle and can produce incorrect shared-buffer use.",
+                  "zh": "不提交，也不等待完成。提前调用会绕过预期生命周期，可能错误复用共享缓冲。"
+                }
+              ]
+            },
+            {
+              "name": "update",
+              "kind": "method",
+              "signature": "update(pos: Buffer): void",
+              "description": {
+                "en": "Convenience build with an internal encoder and queue submission.",
+                "zh": "使用内部 encoder 和队列提交的便捷建格。"
+              },
+              "parameters": [
+                {
+                  "name": "pos",
+                  "type": "Buffer",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Same vec2f/count/device requirements as encode(pos).",
+                    "zh": "与 encode(pos) 相同的 vec2f、count 和设备要求。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Automatically calls endSubmit after submitting. Returns before GPU execution completes; queue ordering or Buffer.read() synchronizes dependent work.",
+                  "zh": "提交后自动调用 endSubmit。返回时 GPU 未必已完成；通过队列顺序或 Buffer.read() 同步依赖工作。"
+                }
+              ]
+            },
+            {
+              "name": "destroy",
+              "kind": "method",
+              "signature": "destroy(): void",
+              "description": {
+                "en": "Destroy grid-owned index, count, uniform, and scan resources.",
+                "zh": "销毁网格拥有的索引、计数、uniform 和 scan 资源。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Does not destroy the caller position buffer. Stop encoding/updating before disposal; do not use grid buffers after destruction.",
+                  "zh": "不销毁调用者的位置缓冲。销毁前停止 encode/update；销毁后不要使用网格缓冲。"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/grid/index.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/primitives/scan.ts"
+      ]
+    }
+  ]
+}

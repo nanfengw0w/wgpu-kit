@@ -1,0 +1,319 @@
+{
+  "version": "2.0.0",
+  "verifiedAgainst": "Installed npm package declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989",
+  "entrypoints": [
+    {
+      "path": "wgpu-kit/media",
+      "summary": {
+        "en": "Canvas recording, format negotiation, and Blob downloads.",
+        "zh": "画布录制、格式协商和 Blob 下载。"
+      },
+      "exports": [
+        {
+          "name": "pickMime",
+          "kind": "function",
+          "signature": "pickMime(): string | null",
+          "description": {
+            "en": "Select the first supported recording MIME type, without starting capture.",
+            "zh": "选取首个受支持的录制 MIME 类型，不会启动捕获。"
+          },
+          "parameters": [],
+          "returns": {
+            "type": "string | null",
+            "description": {
+              "en": "Supported MIME string; null if MediaRecorder is absent or none of the candidates is supported.",
+              "zh": "返回支持的 MIME 字符串；若不存在 MediaRecorder 或候选格式都不支持则返回 null。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Actual 2.0.0 order: video/webm;codecs=vp9 → video/webm;codecs=vp8 → video/webm → video/mp4;codecs=avc1.42E01E → video/mp4. The declaration comment suggesting MP4 first is stale.",
+              "zh": "2.0.0 实际顺序：video/webm;codecs=vp9 → video/webm;codecs=vp8 → video/webm → video/mp4;codecs=avc1.42E01E → video/mp4。声明中 MP4 优先的注释已过时。"
+            },
+            {
+              "en": "isTypeSupported is capability negotiation, not a guarantee that a recording will produce bytes.",
+              "zh": "isTypeSupported 只是能力协商，并不保证录制一定能产出数据。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { pickMime } from 'wgpu-kit/media';\nconsole.log(pickMime() ?? 'Recording unavailable');",
+              "caption": {
+                "en": "Check recording support.",
+                "zh": "检测录制支持。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "CanvasRecorder",
+          "kind": "class",
+          "signature": "class CanvasRecorder",
+          "description": {
+            "en": "Records a canvas video stream through the browser MediaRecorder API.",
+            "zh": "通过浏览器 MediaRecorder API 录制画布视频流。"
+          },
+          "members": [
+            {
+              "name": "constructor",
+              "kind": "constructor",
+              "signature": "new CanvasRecorder()",
+              "description": {
+                "en": "Negotiate and retain the preferred MIME type.",
+                "zh": "协商并保存首选 MIME 格式。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "CanvasRecorder",
+                "description": {
+                  "en": "An idle recorder; capture has not started.",
+                  "zh": "空闲录制器，尚未开始捕获。"
+                }
+              },
+              "errors": [
+                {
+                  "en": "Throws Error('MediaRecorder is not supported in this environment') when pickMime() returns null.",
+                  "zh": "pickMime() 返回 null 时抛出 Error('MediaRecorder is not supported in this environment')。"
+                }
+              ]
+            },
+            {
+              "name": "mimeType",
+              "kind": "getter",
+              "signature": "get mimeType(): string",
+              "description": {
+                "en": "Chosen MIME type, fixed at construction.",
+                "zh": "构造时选定的 MIME 类型。"
+              },
+              "returns": {
+                "type": "string",
+                "description": {
+                  "en": "Selected codec/container string.",
+                  "zh": "选中的编码器/容器字符串。"
+                }
+              }
+            },
+            {
+              "name": "recording",
+              "kind": "getter",
+              "signature": "get recording(): boolean",
+              "description": {
+                "en": "Whether the underlying recorder is currently in state recording.",
+                "zh": "底层录制器当前状态是否为 recording。"
+              },
+              "returns": {
+                "type": "boolean",
+                "description": {
+                  "en": "False before start and after stop; true while recording.",
+                  "zh": "启动前和停止后为 false，录制中为 true。"
+                }
+              }
+            },
+            {
+              "name": "start",
+              "kind": "method",
+              "signature": "start(canvas: HTMLCanvasElement, videoBitsPerSecond?: number): void",
+              "description": {
+                "en": "Begin capturing a canvas at a requested 60 frames per second.",
+                "zh": "以请求的 60 帧/秒开始捕获画布。"
+              },
+              "parameters": [
+                {
+                  "name": "canvas",
+                  "type": "HTMLCanvasElement",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Canvas to record; its changing pixels become the video. No audio track is added.",
+                    "zh": "待录制的画布；其像素变化构成视频，不添加音轨。"
+                  }
+                },
+                {
+                  "name": "videoBitsPerSecond",
+                  "type": "number",
+                  "required": false,
+                  "default": "12_000_000",
+                  "description": {
+                    "en": "Requested video bitrate in bits/second; the browser may choose the actual bitrate.",
+                    "zh": "请求的视频比特率，单位比特/秒；实际码率由浏览器决定。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Uses canvas.captureStream(60), MediaRecorder.start(250), and collects nonempty data chunks. It does not advance or redraw the canvas.",
+                  "zh": "调用 canvas.captureStream(60)、MediaRecorder.start(250)，收集非空数据块；不会推进模拟或重绘画布。"
+                },
+                {
+                  "en": "Wait for the previous stop() promise before starting again. The recorder reference remains set until the stop event.",
+                  "zh": "再次开始前等待上次 stop() Promise 完成；stop 事件之前内部仍保留录制器引用。"
+                }
+              ],
+              "errors": [
+                {
+                  "en": "Throws Error('Recording already in progress') if an internal recorder exists. Browser captureStream/MediaRecorder errors also propagate, including an origin-tainted canvas or unsupported encoder.",
+                  "zh": "已有内部录制器时抛出 Error('Recording already in progress')；浏览器 captureStream/MediaRecorder 错误也会直接传播，例如画布被跨域内容污染或编码器不可用。"
+                }
+              ]
+            },
+            {
+              "name": "stop",
+              "kind": "method",
+              "signature": "stop(): Promise<RecordingResult>",
+              "description": {
+                "en": "Stop recording and join collected video chunks into a Blob.",
+                "zh": "结束录制，并将收集的视频块合并为 Blob。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "Promise<RecordingResult>",
+                "description": {
+                  "en": "Resolves after the MediaRecorder stop event with the recording data and elapsed wall-clock duration.",
+                  "zh": "MediaRecorder stop 事件后返回录制数据和经过的墙钟时间。"
+                }
+              },
+              "errors": [
+                {
+                  "en": "Rejects Error('没有进行中的录制') if no recorder is recording, and rejects if the final Blob has zero bytes. Native stop errors may reject too.",
+                  "zh": "没有正在录制的实例时拒绝并返回 Error('没有进行中的录制')；最终 Blob 为 0 字节时也拒绝。原生 stop 错误也可能导致拒绝。"
+                }
+              ],
+              "constraints": [
+                {
+                  "en": "No MediaRecorder error listener, cancellation, or explicit stream-track cleanup is exposed. Call stop once per started session and handle rejection.",
+                  "zh": "没有暴露 MediaRecorder 错误监听器、取消或显式视频轨道清理功能。每次启动后只调用一次 stop，并处理拒绝。"
+                }
+              ]
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { CanvasRecorder, downloadBlob } from 'wgpu-kit/media';\nconst recorder = new CanvasRecorder();\nconst canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;\n// Invoke start from a user action; keep rendering your canvas.\nrecorder.start(canvas, 8_000_000);\n// Invoke this from a later Stop action.\nasync function finishRecording() {\n  const result = await recorder.stop();\n  const extension = result.mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';\n  downloadBlob(result.blob, `capture.${extension}`);\n}",
+              "caption": {
+                "en": "Start capture and save it from a later stop action.",
+                "zh": "开始捕获，并由后续停止操作保存视频。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "RecordingResult",
+          "kind": "interface",
+          "signature": "interface RecordingResult { blob: Blob; mimeType: string; seconds: number; bytes: number; }",
+          "description": {
+            "en": "Metadata and bytes returned by CanvasRecorder.stop().",
+            "zh": "CanvasRecorder.stop() 返回的数据和元信息。"
+          },
+          "parameters": [
+            {
+              "name": "blob",
+              "type": "Blob",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Recorded video chunks combined into one Blob.",
+                "zh": "合并后的视频 Blob。"
+              }
+            },
+            {
+              "name": "mimeType",
+              "type": "string",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "MIME selected by the recorder.",
+                "zh": "录制器选中的 MIME。"
+              }
+            },
+            {
+              "name": "seconds",
+              "type": "number",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Elapsed performance.now() time from start to stop event, in seconds; not measured media timeline duration.",
+                "zh": "从 start 到 stop 事件的 performance.now() 时间差，单位秒；不是解析媒体轨道得出的时长。"
+              }
+            },
+            {
+              "name": "bytes",
+              "type": "number",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Blob.size in bytes.",
+                "zh": "Blob.size，单位字节。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "downloadBlob",
+          "kind": "function",
+          "signature": "downloadBlob(blob: Blob, filename: string): void",
+          "description": {
+            "en": "Ask the browser to download a Blob using an object URL.",
+            "zh": "使用对象 URL 请求浏览器下载 Blob。"
+          },
+          "parameters": [
+            {
+              "name": "blob",
+              "type": "Blob",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Data to download.",
+                "zh": "待下载的数据。"
+              }
+            },
+            {
+              "name": "filename",
+              "type": "string",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Suggested download filename; browser policies may alter it.",
+                "zh": "建议下载文件名，浏览器策略可能修改它。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "void",
+            "description": {
+              "en": "No return value.",
+              "zh": "无返回值。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Requires a browser document. Creates and clicks an anchor, then revokes the object URL after 5000 ms. This is a download request, not a completion receipt.",
+              "zh": "需要浏览器 document；创建并点击链接，5000 ms 后释放对象 URL。此操作只是发起下载，不代表下载已完成。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { downloadBlob } from 'wgpu-kit/media';\ndownloadBlob(new Blob(['hello'], { type: 'text/plain' }), 'hello.txt');",
+              "caption": {
+                "en": "Request a browser download.",
+                "zh": "发起浏览器下载。"
+              }
+            }
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/media.ts"
+      ]
+    }
+  ]
+}
