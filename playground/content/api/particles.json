@@ -1,0 +1,924 @@
+{
+  "version": "2.0.0",
+  "verifiedAgainst": "Installed npm package declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989",
+  "entrypoints": [
+    {
+      "path": "wgpu-kit/particles",
+      "summary": {
+        "en": "Four-species particle simulation API; configuration and lifecycle, without preset marketing.",
+        "zh": "四物种粒子模拟 API，完整说明配置和生命周期，不将预设作为营销展示。"
+      },
+      "exports": [
+        {
+          "name": "particles",
+          "kind": "function",
+          "signature": "particles(config?: ParticlesConfig): Promise<ParticlesSim>",
+          "description": {
+            "en": "Create and initialize a four-species GPU particle simulation.",
+            "zh": "创建并初始化四物种 GPU 粒子模拟。"
+          },
+          "parameters": [
+            {
+              "name": "config",
+              "type": "ParticlesConfig",
+              "required": false,
+              "default": "{}",
+              "description": {
+                "en": "Simulation, rendering, and initialization options; all fields are detailed under ParticlesConfig.",
+                "zh": "模拟、渲染和初始化选项；所有字段详见 ParticlesConfig。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "Promise<ParticlesSim>",
+            "description": {
+              "en": "Initialized buffers and compute pipelines, without a render loop or attached canvas.",
+              "zh": "已初始化的缓冲和计算管线，尚无渲染循环，也未绑定画布。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "World half-width is fixed by count: sqrt(count/16_000). Initial positions are seeded within ±0.8*worldHalf, velocities start at zero, and species indices are 0..3. No public worldHalf or species-count option exists.",
+              "zh": "世界半宽由 count 决定：sqrt(count/16_000)。初始位置位于 ±0.8*worldHalf，速度为零，物种编号为 0..3。不提供 worldHalf 或物种数公共选项。"
+            },
+            {
+              "en": "The caller owns animation scheduling. tick works without attach for compute-only use. Attach a canvas once if built-in rendering is desired.",
+              "zh": "动画调度由调用者负责。无需 attach 也能 tick，支持纯计算。需要内置渲染时只 attach 一次画布。"
+            },
+            {
+              "en": "WebGPU and the shared GpuContext are required. No WebGL or CPU fallback is provided. Resource use depends on count, grid resolution, and device limits.",
+              "zh": "需要 WebGPU 和共享 GpuContext。不提供 WebGL 或 CPU 回退。资源用量取决于数量、网格分辨率和设备限制。"
+            }
+          ],
+          "errors": [
+            {
+              "en": "Rejects UsageError(ERR_USAGE) for invalid count/mode and n2 count >32_000. An unknown string force name throws plain Error. Device acquisition, buffer allocation, shader compilation, or pipeline validation can reject.",
+              "zh": "count/mode 无效或 n2 数量 >32_000 时拒绝，错误为 UsageError(ERR_USAGE)。未知字符串力名称抛普通 Error。设备获取、缓冲分配、shader 编译或管线校验也可能失败。"
+            },
+            {
+              "en": "Physical numeric options and custom force-matrix length/range are not comprehensively checked. Invalid numbers can reach GPU code; validate application input.",
+              "zh": "不会全面校验物理数值选项或自定义力矩阵长度/范围。无效数值可能直接进入 GPU 代码，应由应用验证输入。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { particles } from 'wgpu-kit/particles';\nconst canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;\nconst sim = await particles({ count: 4096, mode: 'grid', seed: 'example' });\nawait sim.attach(canvas);\nlet raf = 0;\nlet stopped = false;\nfunction frame() {\n  if (stopped) return;\n  sim.tick();\n  raf = requestAnimationFrame(frame);\n}\nraf = requestAnimationFrame(frame);\nfunction dispose() {\n  stopped = true;\n  cancelAnimationFrame(raf);\n  sim.destroy();\n}",
+              "caption": {
+                "en": "Initialize once, render on animation frames, and stop scheduling before destroying.",
+                "zh": "初始化一次，在动画帧中渲染，销毁前停止调度。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ParticlesConfig",
+          "kind": "interface",
+          "signature": "interface ParticlesConfig",
+          "description": {
+            "en": "All options are optional; defaults below come from the installed 2.0.0 implementation.",
+            "zh": "所有选项均可选；以下默认值来自已安装 2.0.0 的实现。"
+          },
+          "parameters": [
+            {
+              "name": "count",
+              "type": "number",
+              "required": false,
+              "default": "8192",
+              "description": {
+                "en": "Integer particle count in 1..1_000_000. n2 mode rejects counts above 32_000 (its error text recommends at most 20_000). Device memory limits may be lower.",
+                "zh": "粒子数量，整数范围 1..1_000_000。n2 模式拒绝超过 32_000 的数量（其错误文案建议不超过 20_000）。设备内存限制可能更低。"
+              }
+            },
+            {
+              "name": "forces",
+              "type": "ForcePresetName | 'random' | ForceMatrix",
+              "required": false,
+              "default": "'cells'",
+              "description": {
+                "en": "One of cells/snakes/orbitals/viruses, seeded random, or a readonly 16-number tuple. Four species use matrix[mySpecies*4+otherSpecies]; custom arrays are not length/range-validated here.",
+                "zh": "可选 cells/snakes/orbitals/viruses、带种子的 random 或只读 16 数值元组。四个物种按 matrix[mySpecies*4+otherSpecies] 取值；此处不校验自定义数组长度/范围。"
+              }
+            },
+            {
+              "name": "mode",
+              "type": "'n2' | 'tiled' | 'grid'",
+              "required": false,
+              "default": "'grid'",
+              "description": {
+                "en": "Neighbor algorithm: all-pairs, workgroup-tiled all-pairs, or spatial grid. The declaration comment saying tiled is the default is stale; implementation defaults to grid.",
+                "zh": "邻域算法：全量两两计算、workgroup 分块两两计算或空间网格。声明中默认 tiled 的注释已过时；实现默认 grid。"
+              }
+            },
+            {
+              "name": "color",
+              "type": "'species' | 'velocity'",
+              "required": false,
+              "default": "'species'",
+              "description": {
+                "en": "Canvas coloring by four species or speed magnitude. Used when the renderer is attached.",
+                "zh": "画布按四种物种或速度大小着色，attach 渲染器时生效。"
+              }
+            },
+            {
+              "name": "bounds",
+              "type": "'wrap' | 'clamp'",
+              "required": false,
+              "default": "'wrap'",
+              "description": {
+                "en": "How updated positions remain in the square world: wrap or clamp. Interaction distances/neighborhood searches do not wrap across opposite edges.",
+                "zh": "更新后位置如何保持在方形世界内：环绕或钳位。交互距离/邻域搜索不会跨相对边界环绕。"
+              }
+            },
+            {
+              "name": "seed",
+              "type": "string | number",
+              "required": false,
+              "default": "'wgpu-kit'",
+              "description": {
+                "en": "Converted to String(seed), then hashed; initializes positions/species and the random force matrix deterministically.",
+                "zh": "转换为 String(seed) 后散列，确定性地初始化位置、物种和 random 力矩阵。"
+              }
+            },
+            {
+              "name": "rMax",
+              "type": "number",
+              "required": false,
+              "default": "0.12",
+              "description": {
+                "en": "Maximum interaction radius in world units. Use a finite positive number. Also affects grid resolution.",
+                "zh": "世界单位下的最大交互半径，应使用有限正数，也影响网格分辨率。"
+              }
+            },
+            {
+              "name": "beta",
+              "type": "number",
+              "required": false,
+              "default": "0.3",
+              "description": {
+                "en": "Piecewise force-curve breakpoint at normalized distance d/rMax. Meaningful values are between 0 and 1; not validated by this API.",
+                "zh": "归一化距离 d/rMax 下的分段力曲线分界点。合理值在 0 与 1 之间；API 不验证。"
+              }
+            },
+            {
+              "name": "forceFactor",
+              "type": "number",
+              "required": false,
+              "default": "10",
+              "description": {
+                "en": "Acceleration scale: summed interactions are multiplied by forceFactor*rMax before integration.",
+                "zh": "加速度缩放；交互总和在积分前乘以 forceFactor*rMax。"
+              }
+            },
+            {
+              "name": "frictionHalfLife",
+              "type": "number",
+              "required": false,
+              "default": "0.04",
+              "description": {
+                "en": "Damping time parameter used as exp(-effectiveDt/frictionHalfLife). Despite the name, implementation does not include ln(2), so this is an exponential decay time constant rather than a mathematical half-life. Use a positive finite value.",
+                "zh": "阻尼时间参数，实际公式为 exp(-effectiveDt/frictionHalfLife)。虽然名称含 HalfLife，实现没有 ln(2)，数学上是指数衰减时间常数，不是真正半衰期。应使用有限正数。"
+              }
+            },
+            {
+              "name": "dt",
+              "type": "number",
+              "required": false,
+              "default": "0.02",
+              "description": {
+                "en": "Base simulation time step per tick, multiplied by the tick argument. The animation callback elapsed time is not measured automatically.",
+                "zh": "每次 tick 的基础模拟时间步，乘以 tick 参数；不会自动测量动画回调经过的时间。"
+              }
+            },
+            {
+              "name": "pointSize",
+              "type": "number",
+              "required": false,
+              "default": "0.004",
+              "description": {
+                "en": "Normalized point-quad half-size used by the attached renderer, approximately in clip coordinates after world scaling. It is not a literal pixel size; shader generation rounds the scaled value to four decimals.",
+                "zh": "attach 渲染器使用的归一化点四边形半尺寸，经世界缩放后近似为裁剪空间坐标尺寸。它不是直接像素值；shader 生成时会把缩放后的值保留四位小数。"
+              }
+            },
+            {
+              "name": "maxNeighbors",
+              "type": "number",
+              "required": false,
+              "default": "8100",
+              "description": {
+                "en": "Grid-only candidate budget: ceil(maxNeighbors/9) candidates per each of up to 9 neighboring cells (self may count). Use a finite positive number.",
+                "zh": "仅 grid 使用的候选预算：最多 9 个相邻格子，每格检查 ceil(maxNeighbors/9) 个候选（自身也可能计入）。应使用有限正数。"
+              }
+            }
+          ],
+          "typeDetails": [
+            {
+              "name": "ForcePresetName (supporting, not exported by this entry point)",
+              "type": "'cells' | 'snakes' | 'orbitals' | 'viruses'",
+              "description": {
+                "en": "Literal names accepted as force selections. FORCE_PRESETS itself is not a public root or /particles export.",
+                "zh": "作为力配置接受的字面量名称。FORCE_PRESETS 本身不是根入口或 /particles 的公共导出。"
+              }
+            },
+            {
+              "name": "ForceMatrix (supporting, not exported by this entry point)",
+              "type": "readonly [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]",
+              "description": {
+                "en": "A flat 4×4 matrix; lookup is mySpecies*4+otherSpecies. Obtain this type without a private-path import using Exclude<NonNullable<ParticlesConfig[\"forces\"]>, string>.",
+                "zh": "扁平 4×4 矩阵，下标为 mySpecies*4+otherSpecies。无需私有路径导入，可用 Exclude<NonNullable<ParticlesConfig[\"forces\"]>, string> 获取此类型。"
+              }
+            },
+            {
+              "name": "SimMode (supporting, not exported by this entry point)",
+              "type": "'n2' | 'tiled' | 'grid'",
+              "description": {
+                "en": "Obtain through NonNullable<ParticlesConfig[\"mode\"]>.",
+                "zh": "可通过 NonNullable<ParticlesConfig[\"mode\"]> 获取。"
+              }
+            }
+          ],
+          "constraints": [
+            {
+              "en": "maxNeighbors=Infinity does not disable the cap in 2.0.0 despite the declaration comment: DataView.setUint32 converts Infinity to 0, and the shader then processes no candidates. Use a sufficiently large finite budget when needed.",
+              "zh": "尽管声明注释这样描述，2.0.0 的 maxNeighbors=Infinity 并不会禁用上限：DataView.setUint32 将 Infinity 转为 0，shader 随后不处理任何候选。需要时应使用足够大的有限预算。"
+            },
+            {
+              "en": "No package export exists for the internal config/presets file paths. Use public ParticlesConfig and its indexed types, not wgpu-kit/dist/... imports.",
+              "zh": "内部 config/presets 文件路径未在 package exports 中暴露。应使用公共 ParticlesConfig 及其索引类型，不要导入 wgpu-kit/dist/...。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import type { ParticlesConfig } from 'wgpu-kit/particles';\nconst options = {\n  count: 2048,\n  mode: 'grid',\n  color: 'velocity',\n  bounds: 'clamp',\n  seed: 42,\n  rMax: 0.12,\n  beta: 0.3,\n  forceFactor: 8,\n  frictionHalfLife: 0.04,\n  dt: 0.02,\n  pointSize: 0.004,\n  maxNeighbors: 8100,\n  forces: [0, 0.4, -0.2, 0, -0.3, 0, 0.4, 0, 0.2, -0.3, 0, 0.4, 0, 0.2, -0.3, 0],\n} satisfies ParticlesConfig;",
+              "caption": {
+                "en": "Validate configuration and a custom four-species matrix with TypeScript.",
+                "zh": "使用 TypeScript 校验配置与自定义四物种矩阵。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ParticlesSim",
+          "kind": "interface",
+          "signature": "interface ParticlesSim",
+          "description": {
+            "en": "Simulation handle returned by particles(); root entry point also exports this type.",
+            "zh": "particles() 返回的模拟句柄；根入口也导出此类型。"
+          },
+          "members": [
+            {
+              "name": "config",
+              "kind": "readonly property",
+              "signature": "readonly config: ResolvedConfig",
+              "description": {
+                "en": "Resolved initialization config, with live force selection updates.",
+                "zh": "解析后的初始化配置，力配置会实时更新。"
+              },
+              "parameters": [
+                {
+                  "name": "count",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Integer particle count in 1..1_000_000. n2 mode rejects counts above 32_000 (its error text recommends at most 20_000). Device memory limits may be lower.",
+                    "zh": "粒子数量，整数范围 1..1_000_000。n2 模式拒绝超过 32_000 的数量（其错误文案建议不超过 20_000）。设备内存限制可能更低。"
+                  }
+                },
+                {
+                  "name": "forces",
+                  "type": "ForceMatrix",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Resolved 16-number force matrix, updated by setForces().",
+                    "zh": "解析后的 16 数值力矩阵，由 setForces() 更新。"
+                  }
+                },
+                {
+                  "name": "mode",
+                  "type": "'n2' | 'tiled' | 'grid'",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Neighbor algorithm: all-pairs, workgroup-tiled all-pairs, or spatial grid. The declaration comment saying tiled is the default is stale; implementation defaults to grid.",
+                    "zh": "邻域算法：全量两两计算、workgroup 分块两两计算或空间网格。声明中默认 tiled 的注释已过时；实现默认 grid。"
+                  }
+                },
+                {
+                  "name": "color",
+                  "type": "'species' | 'velocity'",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Canvas coloring by four species or speed magnitude. Used when the renderer is attached.",
+                    "zh": "画布按四种物种或速度大小着色，attach 渲染器时生效。"
+                  }
+                },
+                {
+                  "name": "bounds",
+                  "type": "'wrap' | 'clamp'",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "How updated positions remain in the square world: wrap or clamp. Interaction distances/neighborhood searches do not wrap across opposite edges.",
+                    "zh": "更新后位置如何保持在方形世界内：环绕或钳位。交互距离/邻域搜索不会跨相对边界环绕。"
+                  }
+                },
+                {
+                  "name": "seed",
+                  "type": "string",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "String(seed), retained from initialization.",
+                    "zh": "初始化时保存的 String(seed)。"
+                  }
+                },
+                {
+                  "name": "rMax",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Maximum interaction radius in world units. Use a finite positive number. Also affects grid resolution.",
+                    "zh": "世界单位下的最大交互半径，应使用有限正数，也影响网格分辨率。"
+                  }
+                },
+                {
+                  "name": "beta",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Piecewise force-curve breakpoint at normalized distance d/rMax. Meaningful values are between 0 and 1; not validated by this API.",
+                    "zh": "归一化距离 d/rMax 下的分段力曲线分界点。合理值在 0 与 1 之间；API 不验证。"
+                  }
+                },
+                {
+                  "name": "forceFactor",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Acceleration scale: summed interactions are multiplied by forceFactor*rMax before integration.",
+                    "zh": "加速度缩放；交互总和在积分前乘以 forceFactor*rMax。"
+                  }
+                },
+                {
+                  "name": "frictionHalfLife",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Damping time parameter used as exp(-effectiveDt/frictionHalfLife). Despite the name, implementation does not include ln(2), so this is an exponential decay time constant rather than a mathematical half-life. Use a positive finite value.",
+                    "zh": "阻尼时间参数，实际公式为 exp(-effectiveDt/frictionHalfLife)。虽然名称含 HalfLife，实现没有 ln(2)，数学上是指数衰减时间常数，不是真正半衰期。应使用有限正数。"
+                  }
+                },
+                {
+                  "name": "dt",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Base simulation time step per tick, multiplied by the tick argument. The animation callback elapsed time is not measured automatically.",
+                    "zh": "每次 tick 的基础模拟时间步，乘以 tick 参数；不会自动测量动画回调经过的时间。"
+                  }
+                },
+                {
+                  "name": "pointSize",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Normalized point-quad half-size used by the attached renderer, approximately in clip coordinates after world scaling. It is not a literal pixel size; shader generation rounds the scaled value to four decimals.",
+                    "zh": "attach 渲染器使用的归一化点四边形半尺寸，经世界缩放后近似为裁剪空间坐标尺寸。它不是直接像素值；shader 生成时会把缩放后的值保留四位小数。"
+                  }
+                },
+                {
+                  "name": "maxNeighbors",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Grid-only candidate budget: ceil(maxNeighbors/9) candidates per each of up to 9 neighboring cells (self may count). Use a finite positive number.",
+                    "zh": "仅 grid 使用的候选预算：最多 9 个相邻格子，每格检查 ceil(maxNeighbors/9) 个候选（自身也可能计入）。应使用有限正数。"
+                  }
+                },
+                {
+                  "name": "forcesName",
+                  "type": "string",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Selected literal force name, or 'custom'; updated by setForces().",
+                    "zh": "选中的字面量力名称，或 'custom'；由 setForces() 更新。"
+                  }
+                },
+                {
+                  "name": "seedHash",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "32-bit hash of the normalized seed string.",
+                    "zh": "归一化种子字符串的 32 位散列。"
+                  }
+                },
+                {
+                  "name": "friction",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Initial exp(-dt/frictionHalfLife); not a live value after setParams or tick multipliers.",
+                    "zh": "初始 exp(-dt/frictionHalfLife)；setParams 或 tick 倍率变化后不会变成实时值。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "ResolvedConfig",
+                "description": {
+                  "en": "Internal supporting type reachable through ParticlesSim[\"config\"]. The property is readonly, not a deeply immutable snapshot.",
+                  "zh": "可通过 ParticlesSim[\"config\"] 取得的内部关联类型。属性 readonly 不等于深层不可变快照。"
+                }
+              },
+              "typeDetails": [
+                {
+                  "name": "ResolvedConfig (supporting, not exported by this entry point)",
+                  "type": "{ count: number; forces: ForceMatrix; forcesName: string; mode: SimMode; color: \"species\" | \"velocity\"; bounds: \"wrap\" | \"clamp\"; seed: string; seedHash: number; rMax: number; beta: number; forceFactor: number; friction: number; frictionHalfLife: number; dt: number; pointSize: number; maxNeighbors: number }",
+                  "description": {
+                    "en": "All fields are required on resolved output. Do not mutate config directly to control the simulation.",
+                    "zh": "解析结果中所有字段均必有；不要直接修改 config 来控制模拟。"
+                  }
+                }
+              ],
+              "constraints": [
+                {
+                  "en": "setParams changes a separate internal physics object, so config.rMax/beta/forceFactor/frictionHalfLife/dt/friction may remain initialization values. snapshot() reads the current physics values.",
+                  "zh": "setParams 修改另一个内部物理对象，因此 config.rMax/beta/forceFactor/frictionHalfLife/dt/friction 可能仍为初始化值。snapshot() 读取当前物理值。"
+                }
+              ]
+            },
+            {
+              "name": "attach",
+              "kind": "method",
+              "signature": "attach(canvas: HTMLCanvasElement): Promise<void>",
+              "description": {
+                "en": "Configure built-in particle rendering on one canvas.",
+                "zh": "在一个画布上配置内置粒子渲染。"
+              },
+              "parameters": [
+                {
+                  "name": "canvas",
+                  "type": "HTMLCanvasElement",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Canvas with positive CSS client dimensions, not already acquired by an incompatible drawing backend.",
+                    "zh": "具有有效 CSS 客户区尺寸的画布，不应已被不兼容绘制后端占用。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "Promise<void>",
+                "description": {
+                  "en": "Resolves when the canvas renderer is ready.",
+                  "zh": "画布渲染器就绪时完成。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Sets backing width/height to max(1, floor(clientSize*min(devicePixelRatio||1,2))). Configures opaque WebGPU rendering. No automatic resize observer is installed.",
+                  "zh": "像素宽高设为 max(1, floor(clientSize*min(devicePixelRatio||1,2)))，配置不透明 WebGPU 渲染。不自动安装 resize observer。"
+                },
+                {
+                  "en": "Call once per simulation. A second call replaces the renderer reference without first destroying the previous renderer. attach does not start an animation loop.",
+                  "zh": "每个模拟只调用一次。再次调用会替换渲染器引用，但不会先销毁旧渲染器。attach 不启动动画循环。"
+                }
+              ],
+              "errors": [
+                {
+                  "en": "Rejects if canvas.getContext(\"webgpu\") is null or rendering shader/pipeline initialization fails.",
+                  "zh": "canvas.getContext(\"webgpu\") 返回 null 或渲染 shader/管线初始化失败时拒绝。"
+                }
+              ]
+            },
+            {
+              "name": "tick",
+              "kind": "method",
+              "signature": "tick(dtMultiplier?: number): void",
+              "description": {
+                "en": "Advance one simulation step, optionally render it, and swap current state buffers.",
+                "zh": "推进一步模拟，按需渲染，并切换当前状态缓冲。"
+              },
+              "parameters": [
+                {
+                  "name": "dtMultiplier",
+                  "type": "number",
+                  "required": false,
+                  "default": "1",
+                  "description": {
+                    "en": "Multiplier applied to current dt. 0 freezes physical evolution but still submits work/renders/swaps/counts a tick; fractional values slow simulation.",
+                    "zh": "当前 dt 的倍率。0 停止物理推进，但仍提交工作、渲染、交换缓冲并计一次 tick；小数可减慢模拟。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Submits its own command encoder; this high-level API does not expose prepare/encode/endSubmit. Returns before GPU completion. Skip tick entirely to pause GPU work.",
+                  "zh": "自行提交 command encoder；此高层 API 不暴露 prepare/encode/endSubmit。返回时 GPU 不一定已完成。若要暂停 GPU 工作，应完全跳过 tick。"
+                },
+                {
+                  "en": "Integration uses effectiveDt=dt*dtMultiplier and damping exp(-effectiveDt/frictionHalfLife). It does not adapt to elapsed animation-frame time.",
+                  "zh": "积分使用 effectiveDt=dt*dtMultiplier，阻尼为 exp(-effectiveDt/frictionHalfLife)。不会根据动画帧实际间隔自动调整。"
+                }
+              ]
+            },
+            {
+              "name": "setForces",
+              "kind": "method",
+              "signature": "setForces(forces: ForcePresetName | 'random' | ForceMatrix): void",
+              "description": {
+                "en": "Replace the force matrix without recreating the simulation.",
+                "zh": "无需重建模拟，替换力矩阵。"
+              },
+              "parameters": [
+                {
+                  "name": "forces",
+                  "type": "ForcePresetName | 'random' | ForceMatrix",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Same force selection types as ParticlesConfig.forces. random reuses the original seed, so repeated calls produce the same matrix.",
+                    "zh": "与 ParticlesConfig.forces 相同的力配置类型。random 复用原始种子，因此重复调用得到同一矩阵。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Queues a write to the 16-f32 matrix buffer and updates config.forces/config.forcesName. It does not reset positions or velocities.",
+                  "zh": "向 16 个 f32 的矩阵缓冲排队写入，并更新 config.forces/config.forcesName；不重置位置或速度。"
+                }
+              ],
+              "errors": [
+                {
+                  "en": "Unknown force strings throw plain Error. Custom matrix component count/type issues may propagate from Buffer.write; do not pass arbitrary-length arrays.",
+                  "zh": "未知力名称抛普通 Error。自定义矩阵分量数/类型问题可能从 Buffer.write 传播；不要传任意长度数组。"
+                }
+              ]
+            },
+            {
+              "name": "setParams",
+              "kind": "method",
+              "signature": "setParams(params: { rMax?: number; beta?: number; forceFactor?: number; frictionHalfLife?: number; dt?: number }): void",
+              "description": {
+                "en": "Patch current physics parameters; omitted fields retain their current values.",
+                "zh": "局部更新当前物理参数；省略字段保留当前值。"
+              },
+              "parameters": [
+                {
+                  "name": "params",
+                  "type": "{ rMax?: number; beta?: number; forceFactor?: number; frictionHalfLife?: number; dt?: number }",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Partial physics update; all nested fields are optional.",
+                    "zh": "物理参数的部分更新；嵌套字段均可省略。"
+                  }
+                },
+                {
+                  "name": "params.rMax",
+                  "type": "number",
+                  "required": false,
+                  "default": "unchanged when omitted",
+                  "description": {
+                    "en": "Maximum interaction radius in world units. Use a finite positive number. Also affects grid resolution.",
+                    "zh": "世界单位下的最大交互半径，应使用有限正数，也影响网格分辨率。"
+                  }
+                },
+                {
+                  "name": "params.beta",
+                  "type": "number",
+                  "required": false,
+                  "default": "unchanged when omitted",
+                  "description": {
+                    "en": "Piecewise force-curve breakpoint at normalized distance d/rMax. Meaningful values are between 0 and 1; not validated by this API.",
+                    "zh": "归一化距离 d/rMax 下的分段力曲线分界点。合理值在 0 与 1 之间；API 不验证。"
+                  }
+                },
+                {
+                  "name": "params.forceFactor",
+                  "type": "number",
+                  "required": false,
+                  "default": "unchanged when omitted",
+                  "description": {
+                    "en": "Acceleration scale: summed interactions are multiplied by forceFactor*rMax before integration.",
+                    "zh": "加速度缩放；交互总和在积分前乘以 forceFactor*rMax。"
+                  }
+                },
+                {
+                  "name": "params.frictionHalfLife",
+                  "type": "number",
+                  "required": false,
+                  "default": "unchanged when omitted",
+                  "description": {
+                    "en": "Damping time parameter used as exp(-effectiveDt/frictionHalfLife). Despite the name, implementation does not include ln(2), so this is an exponential decay time constant rather than a mathematical half-life. Use a positive finite value.",
+                    "zh": "阻尼时间参数，实际公式为 exp(-effectiveDt/frictionHalfLife)。虽然名称含 HalfLife，实现没有 ln(2)，数学上是指数衰减时间常数，不是真正半衰期。应使用有限正数。"
+                  }
+                },
+                {
+                  "name": "params.dt",
+                  "type": "number",
+                  "required": false,
+                  "default": "unchanged when omitted",
+                  "description": {
+                    "en": "Base simulation time step per tick, multiplied by the tick argument. The animation callback elapsed time is not measured automatically.",
+                    "zh": "每次 tick 的基础模拟时间步，乘以 tick 参数；不会自动测量动画回调经过的时间。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "No runtime numeric validation. Do not explicitly pass undefined for a field, because Object.assign would overwrite it.",
+                  "zh": "没有运行时数值验证。不要显式把某字段设为 undefined，因为 Object.assign 会覆盖原值。"
+                },
+                {
+                  "en": "If rMax changes grid resolution, an asynchronous rebuild starts; only the latest rebuild wins and old grid resources are replaced. No promise or completion callback is exposed; rebuild errors are not caught here.",
+                  "zh": "若 rMax 改变网格分辨率，会启动异步重建；仅最后一次重建生效并替换旧网格资源。不提供 Promise 或完成回调；此处不捕获重建错误。"
+                }
+              ]
+            },
+            {
+              "name": "snapshot",
+              "kind": "method",
+              "signature": "snapshot(): string",
+              "description": {
+                "en": "Serialize selected current settings, not simulation state.",
+                "zh": "序列化选定的当前配置，不保存模拟状态。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "string",
+                "description": {
+                  "en": "JSON containing count, forces name, mode, color, bounds, seed, rMax, beta, forceFactor, frictionHalfLife, dt, pointSize.",
+                  "zh": "JSON 字符串，含 count、forces 名称、mode、color、bounds、seed、rMax、beta、forceFactor、frictionHalfLife、dt、pointSize。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Omits particle buffers, maxNeighbors, and the values of custom force matrices. A custom matrix becomes forces:\"custom\", which particles() cannot resolve as a named matrix; this is not a complete round-trip checkpoint.",
+                  "zh": "省略粒子缓冲、maxNeighbors 和自定义力矩阵数值。自定义矩阵变为 forces:\"custom\"，particles() 无法按名称解析它；此方法不是完整可恢复检查点。"
+                }
+              ]
+            },
+            {
+              "name": "stats",
+              "kind": "method",
+              "signature": "stats(): { fps: number; gpuErrors: number }",
+              "description": {
+                "en": "Read tick-frequency and uncaptured-error counters.",
+                "zh": "读取 tick 频率和未捕获错误计数。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "{ fps: number; gpuErrors: number }",
+                "description": {
+                  "en": "fps starts at 0 and updates when accumulated wall time reaches about 500 ms. gpuErrors counts device uncapturederror events observed by this instance.",
+                  "zh": "fps 初始为 0，在累计墙钟时间达到约 500 ms 时更新。gpuErrors 统计此实例监听到的设备 uncapturederror 事件。"
+                }
+              },
+              "typeDetails": [
+                {
+                  "name": "fps",
+                  "type": "number",
+                  "description": {
+                    "en": "Ticks per elapsed wall-clock second, not GPU kernel duration or a benchmark score. Long pauses can affect the next sample.",
+                    "zh": "每墙钟秒的 tick 数，不是 GPU kernel 耗时或性能基准分数。长暂停会影响下一次样本。"
+                  }
+                },
+                {
+                  "name": "gpuErrors",
+                  "type": "number",
+                  "description": {
+                    "en": "Shared-device uncaptured error count; events may originate from other work using that device.",
+                    "zh": "共享设备的未捕获错误数量；事件可能来自使用同一设备的其他工作。"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "debugGrid",
+              "kind": "optional method",
+              "signature": "debugGrid?(): { partial: Buffer; start: Buffer; fill: Buffer; sortedPos: Buffer; sortedSp: Buffer; order: Buffer }",
+              "description": {
+                "en": "Expose grid-internal buffers for diagnostics only; undefined outside grid mode.",
+                "zh": "仅用于诊断，暴露 grid 内部缓冲；非 grid 模式为 undefined。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "{ partial: Buffer; start: Buffer; fill: Buffer; sortedPos: Buffer; sortedSp: Buffer; order: Buffer }",
+                "description": {
+                  "en": "Borrowed internal buffers, replaced by a later grid rebuild. Do not destroy them.",
+                  "zh": "借用的内部缓冲，后续网格重建会替换它们。不要自行销毁。"
+                }
+              },
+              "typeDetails": [
+                {
+                  "name": "partial",
+                  "type": "Buffer (vec2f, count*9)",
+                  "description": {
+                    "en": "Per-particle per-neighbor-cell partial force contributions.",
+                    "zh": "每粒子、每邻格的部分力贡献。"
+                  }
+                },
+                {
+                  "name": "start",
+                  "type": "Buffer (u32, cells)",
+                  "description": {
+                    "en": "Inclusive starting slot for each cell.",
+                    "zh": "各格子的包含式起始槽位。"
+                  }
+                },
+                {
+                  "name": "fill",
+                  "type": "Buffer (u32, cells)",
+                  "description": {
+                    "en": "Exclusive end slot after scatter, not raw occupancy count.",
+                    "zh": "scatter 后排他终止槽位，不是原始格内数量。"
+                  }
+                },
+                {
+                  "name": "sortedPos",
+                  "type": "Buffer (vec2f, count)",
+                  "description": {
+                    "en": "Position copy grouped by cell.",
+                    "zh": "按格子分组的位置副本。"
+                  }
+                },
+                {
+                  "name": "sortedSp",
+                  "type": "Buffer (u32, count)",
+                  "description": {
+                    "en": "Species indices grouped by cell.",
+                    "zh": "按格子分组的物种下标。"
+                  }
+                },
+                {
+                  "name": "order",
+                  "type": "Buffer (u32, count)",
+                  "description": {
+                    "en": "Original particle index at each sorted slot.",
+                    "zh": "每个排序槽位对应的原始粒子下标。"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "buffers",
+              "kind": "method",
+              "signature": "buffers(): { pos: Buffer; vel: Buffer; species: Buffer }",
+              "description": {
+                "en": "Get borrowed buffers for the current simulation state.",
+                "zh": "获取当前模拟状态的借用缓冲。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "{ pos: Buffer; vel: Buffer; species: Buffer }",
+                "description": {
+                  "en": "pos/vel are count-element vec2f buffers; species is a count-element u32 buffer.",
+                  "zh": "pos/vel 为 count 个 vec2f 元素的缓冲，species 为 count 个 u32 元素的缓冲。"
+                }
+              },
+              "typeDetails": [
+                {
+                  "name": "pos",
+                  "type": "Buffer (vec2f)",
+                  "description": {
+                    "en": "Current 2D world positions.",
+                    "zh": "当前二维世界位置。"
+                  }
+                },
+                {
+                  "name": "vel",
+                  "type": "Buffer (vec2f)",
+                  "description": {
+                    "en": "Current 2D velocities.",
+                    "zh": "当前二维速度。"
+                  }
+                },
+                {
+                  "name": "species",
+                  "type": "Buffer (u32)",
+                  "description": {
+                    "en": "Species labels 0..3, independent of ping-pong state.",
+                    "zh": "0..3 的物种标签，独立于双缓冲状态。"
+                  }
+                }
+              ],
+              "constraints": [
+                {
+                  "en": "pos and vel alternate after tick; call buffers() again for the latest side. CPU snapshots require await buffer.read(). The simulation owns these buffers.",
+                  "zh": "tick 后 pos 和 vel 交替，获取最新侧须再次调用 buffers()。CPU 快照需要 await buffer.read()。这些缓冲由模拟拥有。"
+                }
+              ],
+              "examples": [
+                {
+                  "language": "typescript",
+                  "code": "sim.tick();\nconst { pos, vel, species } = sim.buffers();\nconst positions = await pos.read();\nconsole.log(positions);",
+                  "caption": {
+                    "en": "Obtain the current side after ticking, then read a snapshot.",
+                    "zh": "tick 后取得当前侧，再读取快照。"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "destroy",
+              "kind": "method",
+              "signature": "destroy(): void",
+              "description": {
+                "en": "Release the simulation-owned particle, matrix, uniform, grid, and renderer resources handled by this implementation.",
+                "zh": "释放实现中负责清理的粒子、矩阵、uniform、网格和渲染器资源。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Cancel your animation loop and stop using borrowed buffers first. No automatic RAF cancellation, canvas unconfiguration, disposed-state guard, or error-listener removal is provided.",
+                  "zh": "先取消动画循环并停止使用借用缓冲。不自动取消 RAF、不取消画布配置、不提供销毁状态防护，也不移除错误监听器。"
+                },
+                {
+                  "en": "Avoid destroying while an asynchronous setParams grid rebuild is pending: 2.0.0 does not expose a way to await or cancel that rebuild.",
+                  "zh": "避免在 setParams 异步重建网格期间销毁；2.0.0 不提供等待或取消该重建的方式。"
+                }
+              ]
+            }
+          ],
+          "typeDetails": [
+            {
+              "name": "ForcePresetName (supporting, not exported by this entry point)",
+              "type": "'cells' | 'snakes' | 'orbitals' | 'viruses'",
+              "description": {
+                "en": "Literal names accepted as force selections. FORCE_PRESETS itself is not a public root or /particles export.",
+                "zh": "作为力配置接受的字面量名称。FORCE_PRESETS 本身不是根入口或 /particles 的公共导出。"
+              }
+            },
+            {
+              "name": "ForceMatrix (supporting, not exported by this entry point)",
+              "type": "readonly [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]",
+              "description": {
+                "en": "A flat 4×4 matrix; lookup is mySpecies*4+otherSpecies. Obtain this type without a private-path import using Exclude<NonNullable<ParticlesConfig[\"forces\"]>, string>.",
+                "zh": "扁平 4×4 矩阵，下标为 mySpecies*4+otherSpecies。无需私有路径导入，可用 Exclude<NonNullable<ParticlesConfig[\"forces\"]>, string> 获取此类型。"
+              }
+            },
+            {
+              "name": "SimMode (supporting, not exported by this entry point)",
+              "type": "'n2' | 'tiled' | 'grid'",
+              "description": {
+                "en": "Obtain through NonNullable<ParticlesConfig[\"mode\"]>.",
+                "zh": "可通过 NonNullable<ParticlesConfig[\"mode\"]> 获取。"
+              }
+            }
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/particles/index.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/particles/config.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/particles/presets.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/particles/grid.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/particles/wgsl.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/particles/render.ts"
+      ]
+    }
+  ]
+}

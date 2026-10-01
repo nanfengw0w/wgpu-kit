@@ -10,24 +10,24 @@
  * preservedModules 让所有入口引用同一份 dist/core/context.js——模块级单例
  * 在 ESM 下天然全库唯一,多设备问题从结构上消失。
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import { readFileSync, readdirSync, statSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
-const DIST = join(ROOT, 'dist');
+const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+const DIST = resolve(ROOT, 'dist');
 
 rmSync(DIST, { recursive: true, force: true });
 
-const run = (cmd) => {
-  console.log(`> ${cmd}`);
-  execSync(cmd, { cwd: ROOT, stdio: 'inherit' });
+const runNode = (script, args = []) => {
+  console.log(`> node ${script} ${args.join(' ')}`);
+  execFileSync(process.execPath, [join(ROOT, script), ...args], { cwd: ROOT, stdio: 'inherit' });
 };
 
 // 全量 tsc emit:保留模块结构,入口间共享 dist/core/*
-run('npx tsc -p tsconfig.build.json');
+runNode('node_modules/typescript/bin/tsc', ['-p', 'tsconfig.build.json']);
 
 // 体积预算核对(遍历关键产物)
 const sizes = [];
@@ -75,5 +75,7 @@ if (missing.length) {
   console.log(`  exports 目标: ${Object.keys(pkg.exports ?? {}).length} 个子路径全部命中产物`);
 }
 
-console.log(fail ? '\n构建失败!' : '\n✓ 构建完成(preservedModules),体积与结构断言通过');
+if (!fail) runNode('scripts/audit-exports.mjs');
+
+console.log(fail ? '\n构建失败!' : '\n✓ 构建完成(preservedModules),体积与公开模块结构断言通过');
 process.exit(fail ? 1 : 0);

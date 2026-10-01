@@ -1,0 +1,277 @@
+{
+  "version": "2.0.0",
+  "verifiedAgainst": "Installed npm package declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989",
+  "entrypoints": [
+    {
+      "path": "wgpu-kit/observe",
+      "summary": {
+        "en": "GPU timing, one-cycle device diagnostics, and canvas sizing helpers.",
+        "zh": "GPU 计时、单次设备生命周期诊断和画布尺寸助手。"
+      },
+      "exports": [
+        {
+          "name": "timeGpu",
+          "kind": "function",
+          "signature": "timeGpu(fn: (ctx: GpuContext) => void | Promise<void>): Promise<number>",
+          "description": {
+            "en": "Measure GPU timestamp elapsed time surrounding work submitted by a callback.",
+            "zh": "测量回调提交工作前后的 GPU 时间戳间隔。"
+          },
+          "parameters": [
+            {
+              "name": "fn",
+              "type": "(ctx: GpuContext) => void | Promise<void>",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Callback receiving the shared context. Submit the work to ctx.device.queue before the callback returns/resolves; encoding without submission is not measured.",
+                "zh": "接收共享上下文的回调。回调返回或完成前应把工作提交至 ctx.device.queue；只编码而未提交的工作不会被计入。"
+              }
+            },
+            {
+              "name": "fn.ctx",
+              "type": "GpuContext",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Callback argument: the current shared GPU context, including its device.",
+                "zh": "回调参数：当前共享 GPU 上下文及其 device。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "Promise<number>",
+            "description": {
+              "en": "GPU timestamp difference in milliseconds, including gaps and queue work between the two marker submissions.",
+              "zh": "两个标记提交之间的 GPU 时间戳差，单位毫秒，包含中间空隙和队列工作。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Uses three queue phases: submit a leading timestamp, await fn(ctx), then submit a trailing timestamp plus query readback. This is not isolated per-dispatch duration or display FPS.",
+              "zh": "使用三阶段队列：提交前置时间戳，await fn(ctx)，然后提交后置时间戳和查询读回。它不是单独 dispatch 的耗时，也不是显示帧率。"
+            },
+            {
+              "en": "The active device must have timestamp-query enabled. An externally adopted device must have requested the feature itself. Work on another device/queue is outside the markers.",
+              "zh": "当前 device 必须已启用 timestamp-query；外部接入的 device 应自行请求该特性。其他设备/队列的工作不在标记范围内。"
+            },
+            {
+              "en": "Successful measurement destroys temporary query/readback resources. Version 2.0.0 has no finally cleanup if the callback or readback fails.",
+              "zh": "成功测量后会销毁临时查询/读回资源。2.0.0 在回调或读回失败时没有 finally 清理。"
+            }
+          ],
+          "errors": [
+            {
+              "en": "Rejects UsageError with code ERR_TIMESTAMP_UNSUPPORTED when the device lacks timestamp-query. Context/device, callback, query, and mapping failures propagate.",
+              "zh": "device 不含 timestamp-query 时拒绝，错误为 UsageError，code 是 ERR_TIMESTAMP_UNSUPPORTED；上下文/设备、回调、查询和映射错误直接传播。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { timeGpu } from 'wgpu-kit/observe';\n// kernel and resources are created earlier.\nawait kernel.prepare();\nconst milliseconds = await timeGpu(ctx => {\n  const encoder = ctx.device.createCommandEncoder();\n  kernel.encode(encoder, resources);\n  ctx.device.queue.submit([encoder.finish()]);\n  kernel.endSubmit();\n});\nconsole.log(milliseconds);",
+              "caption": {
+                "en": "Time a prepared kernel submission; kernel/resources are application-owned.",
+                "zh": "测量已准备 kernel 的提交；kernel/resources 由应用创建。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "watchDevice",
+          "kind": "function",
+          "signature": "watchDevice(opts: { onError?: (message: string, recoverable: boolean) => void; onRebuild?: (ctx: GpuContext) => void; }): void",
+          "description": {
+            "en": "Observe uncaptured errors and one device-loss/reacquisition cycle.",
+            "zh": "监听未捕获错误，以及一次设备丢失/重新获取过程。"
+          },
+          "parameters": [
+            {
+              "name": "opts",
+              "type": "{ onError?: (message: string, recoverable: boolean) => void; onRebuild?: (ctx: GpuContext) => void }",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Callback options; pass {} if no callbacks are needed.",
+                "zh": "回调选项，无需回调时传 {}。"
+              }
+            },
+            {
+              "name": "opts.onError",
+              "type": "(message: string, recoverable: boolean) => void",
+              "required": false,
+              "default": null,
+              "description": {
+                "en": "Called for uncapturederror with recoverable=true and for device loss with recoverable=false. These flags are library labels, not a guarantee of recovery.",
+                "zh": "uncapturederror 时以 recoverable=true 调用，设备丢失时以 false 调用。这是库的分类标记，并不保证可恢复。"
+              }
+            },
+            {
+              "name": "opts.onError.message",
+              "type": "string",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Error message, or GPU device lost: followed by the loss reason.",
+                "zh": "错误消息；设备丢失时为 GPU device lost: 加丢失原因。"
+              }
+            },
+            {
+              "name": "opts.onError.recoverable",
+              "type": "boolean",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "True for uncaptured errors; false for device loss.",
+                "zh": "未捕获错误为 true；设备丢失为 false。"
+              }
+            },
+            {
+              "name": "opts.onRebuild",
+              "type": "(ctx: GpuContext) => void",
+              "required": false,
+              "default": null,
+              "description": {
+                "en": "Called after resetting the shared context and successfully acquiring a fresh device; rebuild your own resources here.",
+                "zh": "重置共享上下文并成功获取新设备后调用；在此重建应用自己的资源。"
+              }
+            },
+            {
+              "name": "opts.onRebuild.ctx",
+              "type": "GpuContext",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Freshly acquired context, not a repaired version of old buffers or pipelines.",
+                "zh": "新获取的上下文；旧缓冲和管线不会因此自动修复。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "void",
+            "description": {
+              "en": "No return value.",
+              "zh": "无返回值。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Returns immediately; setup runs asynchronously. No promise, unsubscribe function, or automatic recursive watcher registration is returned.",
+              "zh": "立即返回，注册异步进行；不返回 Promise、取消订阅函数，也不会自动给后继设备重新注册监听。"
+            },
+            {
+              "en": "Only the originally acquired device is watched. Re-register for a new device if needed. Existing simulations, canvases, buffers, and pipelines must be recreated by the application.",
+              "zh": "仅监听最初获取的设备。需要时对新设备重新注册。已有模拟、画布、缓冲和管线均须由应用重新创建。"
+            },
+            {
+              "en": "Reacquisition failure is swallowed. Initial context acquisition has no catch; handle availability before registering. Repeated calls add repeated listeners.",
+              "zh": "重新获取失败会被吞掉；初始上下文获取没有 catch，注册前应处理可用性。重复调用会重复添加监听器。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { GpuContext } from 'wgpu-kit';\nimport { watchDevice } from 'wgpu-kit/observe';\nawait GpuContext.get();\nwatchDevice({\n  onError: (message, recoverable) => console.warn(message, recoverable),\n  onRebuild: ctx => {\n    console.log('Fresh GPU device:', ctx.device);\n    // Recreate application buffers, kernels, and canvas bindings here.\n  },\n});",
+              "caption": {
+                "en": "Register diagnostics after verifying context availability.",
+                "zh": "验证上下文可用后注册诊断。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "preferredCanvasFormat",
+          "kind": "function",
+          "signature": "preferredCanvasFormat(): GPUTextureFormat",
+          "description": {
+            "en": "Return the browser preferred canvas texture format.",
+            "zh": "返回浏览器推荐的画布纹理格式。"
+          },
+          "parameters": [],
+          "returns": {
+            "type": "GPUTextureFormat",
+            "description": {
+              "en": "Result of navigator.gpu.getPreferredCanvasFormat().",
+              "zh": "navigator.gpu.getPreferredCanvasFormat() 的结果。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Direct browser helper; it does not request a device, configure a canvas, or guard missing navigator.gpu.",
+              "zh": "直接调用浏览器接口，不申请设备、不配置画布，也不检查 navigator.gpu 是否存在。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { preferredCanvasFormat } from 'wgpu-kit/observe';\nconst format = preferredCanvasFormat();",
+              "caption": {
+                "en": "Read the format before configuring a WebGPU canvas.",
+                "zh": "配置 WebGPU 画布前读取格式。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "resizeCanvas",
+          "kind": "function",
+          "signature": "resizeCanvas(canvas: HTMLCanvasElement, dprCap?: number): boolean",
+          "description": {
+            "en": "Update canvas backing dimensions from CSS client size and capped device pixel ratio.",
+            "zh": "根据 CSS 客户区尺寸和有上限的设备像素比更新画布像素尺寸。"
+          },
+          "parameters": [
+            {
+              "name": "canvas",
+              "type": "HTMLCanvasElement",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Canvas whose width and height backing attributes will be changed; CSS dimensions remain unchanged.",
+                "zh": "修改该画布的 width/height 像素属性，CSS 尺寸保持不变。"
+              }
+            },
+            {
+              "name": "dprCap",
+              "type": "number",
+              "required": false,
+              "default": "2",
+              "description": {
+                "en": "Maximum device pixel ratio; effective DPR is min(window.devicePixelRatio || 1, dprCap). Use a finite positive cap.",
+                "zh": "设备像素比上限；实际 DPR 为 min(window.devicePixelRatio || 1, dprCap)。应使用有限正数。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "boolean",
+            "description": {
+              "en": "True if width or height changed; false if both already match.",
+              "zh": "宽或高发生变化时为 true；两者都相同时为 false。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Each dimension is max(1, floor(clientDimension × effectiveDPR)). No input validation, ResizeObserver, renderer resize, or texture reallocation is performed for you.",
+              "zh": "每个维度按 max(1, floor(clientDimension × effectiveDPR)) 计算。不执行输入校验，不自动创建 ResizeObserver，也不替你调整渲染器或重建纹理。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { resizeCanvas } from 'wgpu-kit/observe';\nconst canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;\nif (resizeCanvas(canvas, 2)) {\n  // Recreate size-dependent textures and update your camera if needed.\n}",
+              "caption": {
+                "en": "Call during application resize handling.",
+                "zh": "在应用尺寸变化处理逻辑中调用。"
+              }
+            }
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/observe.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/core/context.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/core/codes.ts"
+      ]
+    }
+  ]
+}

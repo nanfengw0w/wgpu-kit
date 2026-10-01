@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 物料捕获:打开粒子模拟,等结构成形,定时截帧(用于合成 README 主视觉 GIF)。
+ * Showcase recording / 演示录制：打开新站并定时截帧，用于 README 动图。
  * 用法:node scripts/capture-frames.mjs <url> <输出目录> [帧数] [间隔ms]
  */
 import { spawn } from 'node:child_process';
@@ -12,8 +12,8 @@ import { get as httpGet } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const URL_ = process.argv[2] ?? 'http://127.0.0.1:8123/dist-playground/index.html?n=66000&c=species&m=grid';
-const OUT = resolve(process.argv[3] ?? join(ROOT, 'docs/assets/frames'));
+const URL_ = process.argv[2] ?? 'http://127.0.0.1:5178/wgpu-kit/';
+const OUT = resolve(process.argv[3] ?? join(ROOT, 'docs/media/frames'));
 const FRAMES = parseInt(process.argv[4] ?? '24', 10);
 const GAP = parseInt(process.argv[5] ?? '400', 10);
 const WARMUP = parseInt(process.argv[6] ?? '9000', 10);
@@ -46,7 +46,7 @@ const profile = mkdtempSync(join(tmpdir(), 'wgpu-cap-'));
 const port = await freePort();
 const child = spawn(BROWSER, ['--headless=new', '--no-first-run', `--remote-debugging-port=${port}`,
   `--user-data-dir=${profile}`, '--enable-unsafe-webgpu', '--hide-scrollbars', '--window-size=1280,800', 'about:blank'],
-  { stdio: ['ignore', 'ignore', 'pipe'] });
+  { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
 
 try {
   let wsUrl;
@@ -64,7 +64,7 @@ try {
   await c.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId);
   await c.send('Page.navigate', { url: URL_ }, sessionId);
 
-  // 等 warmup(结构成形)
+  // 等待站点和 GPU 完成初始化 / Wait for site and GPU initialization
   console.log(`warmup ${WARMUP}ms …`);
   await new Promise((r) => setTimeout(r, WARMUP));
 

@@ -1,0 +1,151 @@
+{
+  "version": "2.0.0",
+  "verifiedAgainst": "Installed npm package declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989",
+  "entrypoints": [
+    {
+      "path": "wgpu-kit/vite",
+      "summary": {
+        "en": "Vite WGSL source hot reload; matching and lifecycle limitations are documented explicitly.",
+        "zh": "Vite WGSL 源码热更新，明确说明路径匹配和生命周期限制。"
+      },
+      "exports": [
+        {
+          "name": "wgpuKitHotReload",
+          "kind": "function",
+          "signature": "wgpuKitHotReload(): VitePluginLike",
+          "description": {
+            "en": "Create a lightweight Vite plugin that broadcasts changed .wgsl source files.",
+            "zh": "创建轻量 Vite 插件，广播变化后的 .wgsl 源码。"
+          },
+          "parameters": [],
+          "returns": {
+            "type": "VitePluginLike",
+            "description": {
+              "en": "Plugin named wgpu-kit:hot-reload with a handleHotUpdate hook.",
+              "zh": "名为 wgpu-kit:hot-reload、含 handleHotUpdate 钩子的插件。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Only files ending exactly in .wgsl are handled. The hook reads source and broadcasts custom event wgpu-kit:kernel with { file, code }, then returns [] to suppress the normal module-update path for that change.",
+              "zh": "仅处理以 .wgsl 结尾的文件。钩子读取源码，通过 wgpu-kit:kernel 自定义事件发送 { file, code }，并返回 []，抑制该变更的常规模块更新路径。"
+            },
+            {
+              "en": "Read/broadcast runs in an unawaited async task and has no error handler. This helper does not compile WGSL on the server.",
+              "zh": "读取/广播在未等待的异步任务中执行，没有错误处理器；该助手不在服务端编译 WGSL。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "// vite.config.ts\nimport { defineConfig } from 'vite';\nimport { wgpuKitHotReload } from 'wgpu-kit/vite';\nexport default defineConfig({ plugins: [wgpuKitHotReload()] });",
+              "caption": {
+                "en": "Install the development-server plugin.",
+                "zh": "安装开发服务器插件。"
+              }
+            }
+          ],
+          "typeDetails": [
+            {
+              "name": "VitePluginLike (supporting, not exported)",
+              "type": "{ name: string; apply?: string; handleHotUpdate?(ctx: ViteHotUpdateCtx): unknown }",
+              "description": {
+                "en": "Minimal structural return type. Actual result has name and handleHotUpdate; apply is absent.",
+                "zh": "最小结构化返回类型。实际结果含 name 和 handleHotUpdate，不设置 apply。"
+              }
+            },
+            {
+              "name": "ViteHotUpdateCtx (supporting, not exported)",
+              "type": "{ file: string; read(): string | Promise<string>; server: { ws: { send(payload: { type: string; event: string; data: unknown }): void } } }",
+              "description": {
+                "en": "Hook context: file is the changed path; read obtains source; server.ws.send publishes the custom payload.",
+                "zh": "钩子上下文：file 为变化路径；read 获取源码；server.ws.send 发布自定义消息。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "hotKernel",
+          "kind": "function",
+          "signature": "hotKernel(kernel: ElementKernel, hot: HotContext | undefined, file: string): void",
+          "description": {
+            "en": "Connect one ElementKernel to matching Vite WGSL source-change events.",
+            "zh": "将一个 ElementKernel 连接到匹配的 Vite WGSL 源码变更事件。"
+          },
+          "parameters": [
+            {
+              "name": "kernel",
+              "type": "ElementKernel",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Kernel whose asynchronous replace(code) method is invoked for matching events. RawKernel is not the declared argument type.",
+                "zh": "匹配事件到达时调用其异步 replace(code) 的 kernel；声明参数类型不是 RawKernel。"
+              }
+            },
+            {
+              "name": "hot",
+              "type": "HotContext | undefined",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Usually import.meta.hot. Passing undefined is an intentional no-op for production.",
+                "zh": "通常传 import.meta.hot；传 undefined 时什么都不做，适用于生产环境。"
+              }
+            },
+            {
+              "name": "file",
+              "type": "string",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "File suffix selector, normally ./sim.wgsl. Version 2.0.0 derives suffix with file.slice(file.lastIndexOf(\"/\")); always include a slash.",
+                "zh": "文件后缀选择器，通常为 ./sim.wgsl。2.0.0 通过 file.slice(file.lastIndexOf(\"/\")) 提取后缀；务必包含斜杠。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "void",
+            "description": {
+              "en": "No return value.",
+              "zh": "无返回值。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Matching uses only the suffix from the final slash, so equally named WGSL files in different directories can collide. A bare filename without slash degenerates to its final character.",
+              "zh": "只按最后一个斜杠起的后缀匹配，不同目录同名 WGSL 文件可能冲突。没有斜杠的裸文件名会退化为只取最后一个字符。"
+            },
+            {
+              "en": "Compilation failure is caught and logged; ElementKernel.replace retains the working old implementation. No unsubscribe, deduplication, or HMR-dispose registration is provided, even if hot.off exists.",
+              "zh": "编译失败会被捕获并记录；ElementKernel.replace 保留可工作的旧实现。即便 hot.off 存在，也不提供取消订阅、去重或 HMR dispose 注册。"
+            }
+          ],
+          "typeDetails": [
+            {
+              "name": "HotContext (supporting, not exported)",
+              "type": "{ on(event: string, cb: (data: unknown) => void): void; off?(event: string, cb: (data: unknown) => void): void }",
+              "description": {
+                "en": "on is required and registers an event listener; off is optional and unused by this implementation. Event payload is checked for string code and file.",
+                "zh": "on 必填，用于注册事件监听；off 可选，但当前实现未调用。事件载荷须含字符串 code 和 file。"
+              }
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import { elementKernel } from 'wgpu-kit';\nimport { hotKernel } from 'wgpu-kit/vite';\nimport code from './sim.wgsl?raw';\nconst kernel = elementKernel({ state: { pos: 'vec2f' }, code });\nhotKernel(kernel, import.meta.hot, './sim.wgsl');\n// sim.wgsl must define a userFn compatible with this state schema.",
+              "caption": {
+                "en": "Register the client-side kernel using a slash-containing file path.",
+                "zh": "用包含斜杠的路径注册客户端 kernel。"
+              }
+            }
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/vite.ts"
+      ]
+    }
+  ]
+}

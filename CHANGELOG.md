@@ -1,6 +1,14 @@
 # Changelog
 
-## 2.0.0 (unreleased — 本地提交,未发布)
+## 2.0.1 — 2026-10-02
+
+- Replace the legacy playground with the supplied bilingual showcase, including documentation and interactive examples. Build for the GitHub Pages `/wgpu-kit/` path. / 使用提供的中英文展示站替换旧演示页，包含文档与交互示例，并适配 GitHub Pages 子路径。
+- Rewrite both READMEs around composable compute, GPU-resident data, typed layouts and native WebGPU integration. Remove the previous performance tables, validation counts and browser matrix. / 对应重写中英文 README，突出计算组合、GPU 数据常驻、类型布局和原生互操作，删除旧性能表、验证数量及浏览器矩阵。
+- Replace the old promotional images with a recording of the new showcase. / 删除旧宣传图片，改用新展示站录制动图。
+- Remove review snapshots and tracked test bundles; audit the npm package contents. Required test sources remain available. / 清理审查快照与已跟踪测试打包文件，核查 npm 包内容，保留必要测试源码。
+- Keep the library API unchanged. / 库 API 保持不变。
+
+## 2.0.0
 
 主题:**可组合计算**。从"每个功能都能单独跑"升级为"功能能组成计算链,数据常驻 GPU,行为有验证背书"。
 

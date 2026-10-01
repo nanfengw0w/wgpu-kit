@@ -1,0 +1,26 @@
+[
+  {
+    "id": "bend-light",
+    "title": "Light you can bend",
+    "description": "Shape a clear optical sheet. Watch its light split, gather, and move across the surface below.",
+    "tags": "refraction · ray accumulation",
+    "param": "Curvature",
+    "min": 0.2,
+    "max": 2,
+    "value": 1,
+    "hint": "Press and drag to reshape the glass. Each gesture redirects the rays that form the caustic beneath it.",
+    "explanation": "A custom elementKernel computes the sheet’s height and normals. A rawKernel traces three wavelength groups through its curved upper boundary and flat lower boundary, then atomically accumulates energy where rays meet the floor. Native WebGPU renders the caustic and the transparent surface from those same buffers. This is a bounded optical model, not full path tracing."
+  },
+  {
+    "id": "frost-glass",
+    "title": "Frost under glass",
+    "description": "Plant a cold seed, then draw warmth through a growing silver crystal.",
+    "tags": "phase growth · diffusion",
+    "param": "Cold intensity",
+    "min": 0.35,
+    "max": 1.5,
+    "value": 1,
+    "hint": "Choose a cold seed or warm touch, then press and drag. Growth remembers the paths you melt through the glass.",
+    "explanation": "Four composed PingPong steps diffuse vapor and temperature through a hexagonal neighborhood. An anisotropic receptive front captures vapor as ice, with latent-heat feedback. A warm brush melts the state while a cold brush adds new seeds. The renderer derives thin crystalline relief from the evolving field. It is a stylized phase-change model, not a calibrated material simulator."
+  }
+]

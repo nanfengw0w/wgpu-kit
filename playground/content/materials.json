@@ -1,0 +1,38 @@
+[
+  {
+    "id": "magnetic-tide",
+    "title": "Magnetic tide",
+    "description": "Pull a field of black-chrome spikes across a quiet circular pool.",
+    "tags": "height field · magnetic sculpture",
+    "param": "Magnetic strength",
+    "min": 0.35,
+    "max": 1.8,
+    "value": 1,
+    "hint": "Move the magnet across the pool. Press to raise the peaks, then release to let the surface settle.",
+    "explanation": "A custom elementKernel evaluates a localized magnetic envelope and a hexagonal peak pattern. PingPong relaxes the persistent height field toward that target. A native WebGPU mesh reads the height buffer directly, derives normals and reflects an authored studio environment. This is a physically inspired height-field sculpture, not a full magnetohydrodynamics solver."
+  },
+  {
+    "id": "pigment-marbling",
+    "title": "Pigment marbling",
+    "description": "Comb indigo, vermilion and gold through a bath of warm ivory.",
+    "tags": "fluid projection · persistent pigment",
+    "param": "Stir strength",
+    "min": 0.3,
+    "max": 1.8,
+    "value": 1,
+    "hint": "Drag the needle to comb the ink. Switch to Drop pigment to add color, or Ivory to open a clear path. Your marks stay in the fluid.",
+    "explanation": "A velocity grid is advected, stirred, projected through a Jacobi pressure solve and then used to advect a separate, finer pigment buffer. The full pipeline stays on the GPU. Bilinear sampling preserves smooth color bands, while a needle and pigment brush make persistent changes. This is a bounded incompressible-fluid approximation for an interactive marbling bath."
+  },
+  {
+    "id": "silk-cloth",
+    "title": "Silk atelier",
+    "description": "Gather a suspended sheet of silk into folds that catch the light.",
+    "tags": "XPBD cloth · anisotropic light",
+    "param": "Breeze",
+    "min": 0,
+    "max": 2,
+    "value": 0.65,
+    "hint": "Drag the silk to gather it. Release to let the folds settle. Arrow keys move the grip; Space releases it.",
+    "explanation": "Graph-colored XPBD distance constraints solve a persistent cloth mesh on the GPU. Each dispatch updates disjoint edges to avoid write conflicts. Native WebGPU derives the deformed normals and weave direction for satin-like lighting. Picking reads positions once when a grip begins; dragging updates a uniform. Self-collision and tearing are not modeled."
+  }
+]

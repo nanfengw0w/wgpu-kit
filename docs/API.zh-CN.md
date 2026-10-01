@@ -1,7 +1,9 @@
+[打开在线演示](https://nanfengw0w.github.io/wgpu-kit/)
+
 # wgpu-kit API 参考
 
-> 浏览器 GPGPU 中间层。本页是全部公开接口的参考文档,风格对齐 three.js docs。
-> 版本:v2.0 · 需 WebGPU(Chrome/Edge 113+、Safari 18+)· 零运行时依赖
+> 面向 TypeScript 的 WebGPU 计算工具，需要支持 WebGPU 的浏览器。计算核心无运行时依赖。
+> 版本:v2.0 · [English reference](API.md)
 
 **入口总览**
 
@@ -13,7 +15,8 @@
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
 | [wgpu-kit/three](#wgpu-kitthree--threepoints) | three.js 互通 |
 | [wgpu-kit/media](#wgpu-kitmedia--canvasrecorder) | 画布录制 |
-| [wgpu-kit/vite](#wgpu-kitvite--wgpukithotreload) | kernel 热重载插件 |
+| [wgpu-kit/vite](#wgpu-kitvite--kernel-热重载) | kernel 热重载插件 |
+| [wgpu-kit/observe](#wgpu-kitobserve--可观测性) | 计时、设备回调和画布助手 |
 
 ---
 
@@ -50,7 +53,7 @@
 
 ##### .lost : Promise\<GPUDeviceLostInfo\> (readonly)
 
-设备丢失时 reject,可 await 做清理。
+设备丢失时以原生设备丢失信息完成，可 await 后处理清理与重建。
 
 ---
 
@@ -150,7 +153,7 @@ await integrate.run({ pos, vel }, { dt: 0.02, friction: 0.914 });
 
 // 热重载:替换逻辑(编译失败自动保持旧版)
 await integrate.replace(`
-  fn userFn(idx: u32, dt: f32) {
+  fn userFn(idx: u32, dt: f32, friction: f32) {
     pos[idx] = pos[idx] * 2.0;
   }
 `);
@@ -199,7 +202,8 @@ WGSL 解析器不在承诺范围内,见 defineSchema 的诚实边界)。
 
 ##### .run ( resources, uniforms? ) : Promise\<void\>
 
-执行一次。
+执行一次：准备管线、编码并提交。返回的 Promise 不等待 GPU 完成；
+CPU 需要完成结果时，使用数据读回或 `GpuContext.sync()`。
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
@@ -289,6 +293,20 @@ await pp.runWith(async (write, read) => {
 ##### .run ( entries : GPUBindGroupEntry[], workgroups : number ) : Promise\<void\>
 
 `entries` 完全由你声明(缓冲/采样器等);`workgroups` 为 X 维工作组数。
+`run()` 负责准备、编码与提交，不等待 GPU 完成。
+
+##### .prepare ( ) : Promise\<void\>
+
+编译管线，完成后才能同步编码。
+
+##### .encode ( encoder : GPUCommandEncoder, entries : GPUBindGroupEntry[], workgroups : number ) : void
+
+向调用方的 encoder 添加计算 pass，不提交。请在没有打开 pass 时调用；
+资源声明与工作组数量由调用方控制。
+
+##### .destroy ( ) : void
+
+释放缓存的管线引用，调用方的缓冲由调用方管理。
 
 ### 代码示例
 
@@ -352,19 +370,26 @@ import { defineSchema, elementKernel, type SchemaInfer } from 'wgpu-kit';
 const Boid = defineSchema({ pos: 'vec2f', vel: 'vec2f', species: 'u32' });
 type BoidRow = SchemaInfer<typeof Boid.fields>; // { pos: {x,y}, vel: {x,y}, species: number }
 
+const count = 1;
 const bufs = await Boid.buffers(count);
-bufs.pos.write([{ x: 1, y: 2 }]);               // 字段/分量拼错 = 编译期报错
-const k = elementKernel({ state: Boid.fields, code: 'fn userFn(idx: u32) { … }' });
+bufs.pos.write([{ x: 1, y: 2 }]);               // 字段或分量拼写错误会被类型检查发现。
+bufs.vel.write([{ x: 0.5, y: 0 }]);
+const k = elementKernel({
+  state: Boid.fields,
+  code: 'fn userFn(idx: u32) { pos[idx] = pos[idx] + vel[idx]; }',
+});
 await k.run(bufs.raws());
-const rows = await bufs.pos.read();             // 带类型的行对象
+const rows = await bufs.pos.read();             // 类型化行对象。
+k.destroy();
+bufs.destroy();
 ```
 
 ---
 
 # wgpu-kit · definePack / registerPack
 
-Pack 平台契约:第三方模拟通过与内置包完全相同的契约注册——统一生命周期、
-统计、自验证 `probe()` 和运行时注册表。
+Pack 注册描述模拟的生命周期以及可选统计或诊断接口。`definePack` 检查名称和
+创建函数，具体资源管理与正确性由 pack 实现负责。
 
 ## PackSim
 
@@ -373,7 +398,7 @@ Pack 平台契约:第三方模拟通过与内置包完全相同的契约注册�
 | `attach?(canvas)` | 否 | 需要 canvas 的包在此建渲染器 |
 | `tick()` | 是 | 推进一帧(计算 + 可选渲染) |
 | `stats?()` | 否 | 轻量运行统计(`{ fps }` 等) |
-| `probe?()` | 否 | 返回物理不变量——verify harness 收集并展示 |
+| `probe?()` | 否 | 应用自定义的可选诊断，由调用方显式执行 |
 | `destroy()` | 是 | 释放全部 GPU 资源 |
 
 ## definePack ( pack ) : WgpuKitPack
@@ -397,7 +422,6 @@ const orbit = definePack({
   name: 'orbit',
   create: async (config) => ({
     tick() { /* … */ },
-    async probe() { return { energyDrift: 0.003 }; },
     destroy() { /* … */ },
   }),
 });
@@ -437,7 +461,7 @@ frame();
 | --- | --- | --- | --- |
 | count | number | 粒子数(1..1,000,000) | `8192` |
 | forces | 'cells' \| 'snakes' \| 'orbitals' \| 'viruses' \| 'random' \| ForceMatrix | 力矩阵预设或自定义 16 元数组(行=施加者,列=承受者,正=吸引) | `'cells'` |
-| mode | 'grid' \| 'tiled' \| 'n2' | 邻域算法。grid = 计数排序空间哈希(推荐,近似 O(N));tiled = 分块暴力; n2 = 全量暴力(≤3 万) | `'grid'` |
+| mode | 'grid' \| 'tiled' \| 'n2' | 邻域算法：计数排序空间网格、分块暴力或全量暴力 | `'grid'` |
 | color | 'species' \| 'velocity' | 着色:按物种 / 按速度 | `'species'` |
 | bounds | 'wrap' \| 'clamp' | 边界:环绕 / 夹紧 | `'wrap'` |
 | seed | string \| number | 随机种子(初始分布 + random 矩阵),可复现 | `'wgpu-kit'` |
@@ -453,8 +477,8 @@ frame();
 预设:`cells`(经典细胞)、`snakes`(蛇群)、`orbitals`(轨道)、`viruses`(捕食)、
 `random`(由 seed 生成)。
 
-**世界与缩放**:世界大小随 `count` 自适应(面积 ∝ count,密度恒定),
-相机自动拉远——任意规模下每粒子的邻居数与受力一致,大规模不改变物理。
+**自适应世界**：世界大小随 `count` 调整，使初始平均密度保持可比。
+实际邻居数量与查询成本取决于粒子分布、交互半径和格子占用情况。
 
 ## 属性
 
@@ -479,15 +503,16 @@ frame();
 ##### .setParams ( params ) : void
 
 热更新物理参数 `{ rMax?, beta?, forceFactor?, frictionHalfLife?, dt? }`。
-注意:`rMax` 变化在 grid 模式下会触发网格重建(约百毫秒)。
+注意：`rMax` 变化在 grid 模式下会触发网格重建。
 
 ##### .snapshot ( ) : string
 
-返回可序列化的配置 JSON——与 `?p=…&m=…&s=…` URL 参数互通,用于分享。
+返回配置 JSON，用于保存或分享。URL 格式由应用定义，并显式转换为配置。
 
 ##### .stats ( ) : { fps : number; gpuErrors : number }
 
-运行统计。`gpuErrors` 非 0 表示存在 GPU 校验错误(黑屏/异常先查这里)。
+运行统计。`fps` 按滚动时间窗口内的 `tick()` 调用计数计算，不表示 GPU 完成或
+画面呈现速率。`gpuErrors` 非 0 表示发生了 GPU 校验错误。
 
 ##### .buffers ( ) : { pos, vel, species }
 
@@ -548,7 +573,7 @@ three.js 快照式互通:每帧把模拟位置读回并写入 `BufferAttribute`,
 | .update ( ) | Promise\<void\> | 同步一帧位置快照(每帧渲染前调用) |
 | .dispose ( ) | void | 释放(含 sim.destroy) |
 
-零拷贝 TSL 直通路径在路线图上;当前快照模式每帧一次 readback(毫秒级),适合中小规模。
+快照模式会将位置读回 CPU，再更新 three.js 属性。请按应用需求选择更新频率。
 
 ---
 
@@ -597,7 +622,7 @@ setTimeout(async () => {
 
 # wgpu-kit/vite · kernel 热重载
 
-Vite 插件 + 客户端助手:WGSL 文件保存 → `kernel.replace()` 毫秒级生效(编译失败保留旧版)。
+Vite 插件和客户端助手：保存 WGSL 文件后调用 `kernel.replace()`，编译失败保留旧版。
 
 ## 构造
 
@@ -630,32 +655,19 @@ hotKernel(k, import.meta.hot, './sim.wgsl');
 
 | 错误类 | 场景 | 处理建议 |
 | --- | --- | --- |
-| `WebGPUUnavailableError` | 无 WebGPU / 无适配器 | 引导用户升级浏览器或开启硬件加速;可部署 `detect.html` 诊断页 |
+| `WebGPUUnavailableError` | 无 WebGPU / 无适配器 | 处理初始化失败，并向用户说明 WebGPU 要求 |
 | `CompileError` | WGSL 编译失败 | 消息含**你的代码行号**与原始编译信息 |
 | `UsageError` | 参数不匹配(类型/长度/缺字段) | 按消息修正调用 |
 
-运行期校验错误(uncapturederror)通过 console 输出,并计入 `sim.stats().gpuErrors`——
-**该计数非 0 即表示渲染异常**,排查"黑屏"先看这里。
-
----
-
-# 性能与限制
-
-| 项 | 数值 | 环境 |
-| --- | --- | --- |
-| 粒子端到端 | 200,000 @ 142fps | RTX 4060 Laptop,playground 实测 |
-| 粒子计算(grid) | 131k @ 0.89ms/帧 | 同上,headless 基准 |
-| 邻域算法 | grid 近似 O(N),66k 时比暴力快 8.5× | 同会话 A/B |
-| 库体积 | core gzip 5.5kB;+particles 10.3kB | gzip |
-
-完整数据:[benchmarks.md](benchmarks.md)。**大规模调参建议**:`count` 增大时
-适当减小 `rMax`(世界密度恒定,半径决定邻域数)。
+粒子模拟的运行期校验错误会计入 `sim.stats().gpuErrors`。检查该计数和浏览器控制台，
+定位计算或渲染中的 GPU 校验错误。
 
 ---
 
 # wgpu-kit/grid · 通用空间邻域
 
-从粒子包提取的通用计数排序空间哈希。任何需要"查邻居"的模拟(流体 SPH / 碰撞 / 聚类)都能用。实测 8.5× 于暴力解、近似 O(N)。
+面向二维位置的计数排序空间网格。格子范围与实体下标保留在 GPU 缓冲中，
+供后续邻域内核使用。查询成本取决于格子占用情况和交互半径。
 
 ## 构造
 
@@ -703,7 +715,8 @@ GPU 计时 / 设备诊断 / 画布助手。
 
 ##### timeGpu ( fn : (ctx) => void | Promise<void> ) : Promise<number>
 
-测量 fn 内 GPU 工作的真实毫秒(timestamp-query;Chrome/Edge 支持)。设备不支持时抛 `UsageError`。
+通过时间戳测量 `fn` 提交工作前后的 GPU 时间区间，包含提交之间的空隙，
+不是各个计算 pass 的耗时总和。设备缺少 `timestamp-query` 时抛 `UsageError`。
 
 ```ts
 import { timeGpu } from 'wgpu-kit/observe';
@@ -715,7 +728,8 @@ console.log(`GPU: ${ms.toFixed(2)} ms/frame`);
 
 ##### watchDevice ( opts : { onError?, onRebuild? } ) : void
 
-注册错误/丢失回调;设备丢失时**自动重建上下文**——长跑页面(展览/大屏)必需。
+注册共享设备的错误与丢失回调。设备丢失后尝试获取新上下文，成功时调用
+`onRebuild`。应用需要为新设备重新创建自己的缓冲、内核与渲染器。
 
 ## 画布助手
 
@@ -731,27 +745,57 @@ console.log(`GPU: ${ms.toFixed(2)} ms/frame`);
 
 # wgpu-kit · createScan / createReduce
 
-v2.0 已验证并行原语:u32 前缀和 `scan`(双档——≤65536 单 workgroup 分块,
-之上三级流水;每条路径都对 CPU 参考**位一致**)与 u32 归约 `reduce`
-(`sumInto` 结果常驻 GPU 供后续 kernel 消费;`sum` 为读回便捷路径)。两者
-与 kernel 一致遵守 encode-once 合同——一次提交前只能 encode 一次,
+u32 前缀和 `scan` 在不超过 65536 个元素时使用单 workgroup 路径，更大输入使用
+三个 pass。u32 归约 `reduce` 的 `sumInto` 将结果保留在 GPU 上，`sum` 提供
+CPU 读回。两者与 kernel 一致：每个实例在一次提交前编码一次，提交后调用
 `endSubmit()` 重置。
 
+### 方法
+
+| 方法 | 行为 |
+| --- | --- |
+| `scan.prepare()` / `reduce.prepare()` | 异步准备管线，编码前等待完成 |
+| `scan.encode(encoder, src, dst, count, exclusive = true)` | 将 u32 前缀和写入 GPUBuffer `dst` |
+| `scan.run(src, dst, count, exclusive = true)` | 使用 Buffer 的便捷路径，内部提交 |
+| `reduce.sumInto(encoder, src, count, dst)` | 将 u32 总和写入 GPUBuffer `dst`，无需读回 |
+| `reduce.sum(src, count)` | 读回后返回 JavaScript number |
+| `endSubmit()` | 调用方提交后，重置该实例的编码状态 |
+| `destroy()` | 释放内部缓冲和缓存的管线引用 |
+
+编码方法接收原生 GPUBuffer，`run` 和 `sum` 接收 wgpu-kit Buffer。
+请在没有打开 pass 时调用编码方法；求和采用 u32 算术。
+
+### GPU 常驻示例
+
 ```ts
-import { Buffer, createScan, createReduce } from 'wgpu-kit';
+import { Buffer, GpuContext, createScan, createReduce } from 'wgpu-kit';
+
+const count = 1024;
+const src = await Buffer.create('u32', count);
+const prefix = await Buffer.create('u32', count);
+const total = await Buffer.create('u32', 1);
+src.write(Uint32Array.from({ length: count }, (_, i) => i));
 
 const scan = createScan();
-await scan.prepare();
-const src = await Buffer.create('u32', 100_000);
-const dst = await Buffer.create('u32', 100_000);
-src.write(new Uint32Array(100_000).map((_, i) => i));
-await scan.run(src, dst, 100_000, true);      // 排他前缀和
-const prefix = (await dst.read()) as Uint32Array;
-prefix[3]; // = 0+1+2 = 3
-
 const reduce = createReduce();
+await scan.prepare();
 await reduce.prepare();
-const sum = await reduce.sum(src, 100_000);   // 便捷读回(Σ)
+const { device } = await GpuContext.get();
+const encoder = device.createCommandEncoder();
+
+scan.encode(encoder, src.gpuBuffer, prefix.gpuBuffer, count, true);
+reduce.sumInto(encoder, prefix.gpuBuffer, count, total.gpuBuffer);
+device.queue.submit([encoder.finish()]);
+scan.endSubmit();
+reduce.endSubmit();
+
+// 仅在最后将结果读回 CPU。
+console.log(await total.read());
+scan.destroy();
+reduce.destroy();
+src.destroy();
+prefix.destroy();
+total.destroy();
 ```
 
 dispatch 上限遵循 WebGPU 规范,超限在入口即抛清晰 `UsageError`:

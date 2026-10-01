@@ -1,0 +1,280 @@
+{
+  "version": "2.0.0",
+  "verifiedAgainst": "Installed npm package declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989",
+  "entrypoints": [
+    {
+      "path": "wgpu-kit/react",
+      "summary": {
+        "en": "React canvas component with mount-scoped simulation ownership.",
+        "zh": "按挂载生命周期拥有模拟的 React 画布组件。"
+      },
+      "exports": [
+        {
+          "name": "ParticleCanvas",
+          "kind": "component",
+          "signature": "ParticleCanvas(props: ParticleCanvasProps): JSX.Element",
+          "description": {
+            "en": "Render a React canvas and own a particles simulation plus requestAnimationFrame loop.",
+            "zh": "渲染 React canvas，管理 particles 模拟与 requestAnimationFrame 循环。"
+          },
+          "parameters": [
+            {
+              "name": "props",
+              "type": "ParticleCanvasProps",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "All ParticlesConfig fields plus className, style, and onReady; see the complete props entry.",
+                "zh": "所有 ParticlesConfig 字段，加上 className、style 和 onReady；详见完整 props 条目。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "JSX.Element",
+            "description": {
+              "en": "A canvas element whose initialization runs after mounting.",
+              "zh": "一个 canvas 元素，挂载后异步初始化模拟。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Requires React >=18 (optional peer dependency) and browser WebGPU. Component creates its simulation once per mount. Config and onReady changes are ignored by its empty-dependency effect; use a new React key to rebuild.",
+              "zh": "需要 React >=18（可选 peer dependency）和浏览器 WebGPU。每次挂载只创建一次模拟。空依赖 effect 忽略后续 config 和 onReady 变化；使用新的 React key 重建。"
+            },
+            {
+              "en": "The component calls attach(), then onReady(), then ticks on every animation frame. Unmount cancels the scheduled frame and destroys its simulation. Do not run a second tick loop or retain the handle after unmount.",
+              "zh": "组件调用 attach()，随后 onReady()，然后在每个动画帧 tick。卸载时取消已调度帧并销毁模拟。不要另开 tick 循环，也不要在卸载后继续使用句柄。"
+            },
+            {
+              "en": "No onError prop, error UI, pause prop, resize observer, or visibility throttling is provided. Async initialization failures are not caught internally; use the lower-level API when explicit failure control is required.",
+              "zh": "不提供 onError、错误界面、pause、resize observer 或可见性节流。内部不捕获异步初始化错误；需要精确失败控制时使用底层 API。"
+            },
+            {
+              "en": "Canvas style defaults to width:100%, height:100%, display:block, background:#05070c; supplied style overrides these. Give its container a usable height.",
+              "zh": "canvas 样式默认为 width:100%、height:100%、display:block、background:#05070c；传入 style 可覆盖。容器应有可用高度。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "tsx",
+              "code": "import { ParticleCanvas } from 'wgpu-kit/react';\nexport function Simulation({ seed }: { seed: string }) {\n  return (\n    <div style={{ height: 400 }}>\n      <ParticleCanvas\n        key={seed}\n        seed={seed}\n        count={4096}\n        mode=\"grid\"\n        style={{ background: '#000' }}\n        onReady={sim => sim.setParams({ forceFactor: 8 })}\n      />\n    </div>\n  );\n}",
+              "caption": {
+                "en": "Use key to rebuild when configuration identity changes.",
+                "zh": "配置身份变化时使用 key 重建。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ParticleCanvasProps",
+          "kind": "interface",
+          "signature": "interface ParticleCanvasProps extends ParticlesConfig { className?: string; style?: CSSProperties; onReady?: (sim: ParticlesSim) => void; }",
+          "description": {
+            "en": "Complete component props, inheriting the same implementation defaults and constraints as particles().",
+            "zh": "完整组件 props，继承与 particles() 相同的实现默认值和限制。"
+          },
+          "parameters": [
+            {
+              "name": "count",
+              "type": "number",
+              "required": false,
+              "default": "8192",
+              "description": {
+                "en": "Integer particle count in 1..1_000_000. n2 mode rejects counts above 32_000 (its error text recommends at most 20_000). Device memory limits may be lower.",
+                "zh": "粒子数量，整数范围 1..1_000_000。n2 模式拒绝超过 32_000 的数量（其错误文案建议不超过 20_000）。设备内存限制可能更低。"
+              }
+            },
+            {
+              "name": "forces",
+              "type": "ForcePresetName | 'random' | ForceMatrix",
+              "required": false,
+              "default": "'cells'",
+              "description": {
+                "en": "One of cells/snakes/orbitals/viruses, seeded random, or a readonly 16-number tuple. Four species use matrix[mySpecies*4+otherSpecies]; custom arrays are not length/range-validated here.",
+                "zh": "可选 cells/snakes/orbitals/viruses、带种子的 random 或只读 16 数值元组。四个物种按 matrix[mySpecies*4+otherSpecies] 取值；此处不校验自定义数组长度/范围。"
+              }
+            },
+            {
+              "name": "mode",
+              "type": "'n2' | 'tiled' | 'grid'",
+              "required": false,
+              "default": "'grid'",
+              "description": {
+                "en": "Neighbor algorithm: all-pairs, workgroup-tiled all-pairs, or spatial grid. The declaration comment saying tiled is the default is stale; implementation defaults to grid.",
+                "zh": "邻域算法：全量两两计算、workgroup 分块两两计算或空间网格。声明中默认 tiled 的注释已过时；实现默认 grid。"
+              }
+            },
+            {
+              "name": "color",
+              "type": "'species' | 'velocity'",
+              "required": false,
+              "default": "'species'",
+              "description": {
+                "en": "Canvas coloring by four species or speed magnitude. Used when the renderer is attached.",
+                "zh": "画布按四种物种或速度大小着色，attach 渲染器时生效。"
+              }
+            },
+            {
+              "name": "bounds",
+              "type": "'wrap' | 'clamp'",
+              "required": false,
+              "default": "'wrap'",
+              "description": {
+                "en": "How updated positions remain in the square world: wrap or clamp. Interaction distances/neighborhood searches do not wrap across opposite edges.",
+                "zh": "更新后位置如何保持在方形世界内：环绕或钳位。交互距离/邻域搜索不会跨相对边界环绕。"
+              }
+            },
+            {
+              "name": "seed",
+              "type": "string | number",
+              "required": false,
+              "default": "'wgpu-kit'",
+              "description": {
+                "en": "Converted to String(seed), then hashed; initializes positions/species and the random force matrix deterministically.",
+                "zh": "转换为 String(seed) 后散列，确定性地初始化位置、物种和 random 力矩阵。"
+              }
+            },
+            {
+              "name": "rMax",
+              "type": "number",
+              "required": false,
+              "default": "0.12",
+              "description": {
+                "en": "Maximum interaction radius in world units. Use a finite positive number. Also affects grid resolution.",
+                "zh": "世界单位下的最大交互半径，应使用有限正数，也影响网格分辨率。"
+              }
+            },
+            {
+              "name": "beta",
+              "type": "number",
+              "required": false,
+              "default": "0.3",
+              "description": {
+                "en": "Piecewise force-curve breakpoint at normalized distance d/rMax. Meaningful values are between 0 and 1; not validated by this API.",
+                "zh": "归一化距离 d/rMax 下的分段力曲线分界点。合理值在 0 与 1 之间；API 不验证。"
+              }
+            },
+            {
+              "name": "forceFactor",
+              "type": "number",
+              "required": false,
+              "default": "10",
+              "description": {
+                "en": "Acceleration scale: summed interactions are multiplied by forceFactor*rMax before integration.",
+                "zh": "加速度缩放；交互总和在积分前乘以 forceFactor*rMax。"
+              }
+            },
+            {
+              "name": "frictionHalfLife",
+              "type": "number",
+              "required": false,
+              "default": "0.04",
+              "description": {
+                "en": "Damping time parameter used as exp(-effectiveDt/frictionHalfLife). Despite the name, implementation does not include ln(2), so this is an exponential decay time constant rather than a mathematical half-life. Use a positive finite value.",
+                "zh": "阻尼时间参数，实际公式为 exp(-effectiveDt/frictionHalfLife)。虽然名称含 HalfLife，实现没有 ln(2)，数学上是指数衰减时间常数，不是真正半衰期。应使用有限正数。"
+              }
+            },
+            {
+              "name": "dt",
+              "type": "number",
+              "required": false,
+              "default": "0.02",
+              "description": {
+                "en": "Base simulation time step per tick, multiplied by the tick argument. The animation callback elapsed time is not measured automatically.",
+                "zh": "每次 tick 的基础模拟时间步，乘以 tick 参数；不会自动测量动画回调经过的时间。"
+              }
+            },
+            {
+              "name": "pointSize",
+              "type": "number",
+              "required": false,
+              "default": "0.004",
+              "description": {
+                "en": "Normalized point-quad half-size used by the attached renderer, approximately in clip coordinates after world scaling. It is not a literal pixel size; shader generation rounds the scaled value to four decimals.",
+                "zh": "attach 渲染器使用的归一化点四边形半尺寸，经世界缩放后近似为裁剪空间坐标尺寸。它不是直接像素值；shader 生成时会把缩放后的值保留四位小数。"
+              }
+            },
+            {
+              "name": "maxNeighbors",
+              "type": "number",
+              "required": false,
+              "default": "8100",
+              "description": {
+                "en": "Grid-only candidate budget: ceil(maxNeighbors/9) candidates per each of up to 9 neighboring cells (self may count). Use a finite positive number.",
+                "zh": "仅 grid 使用的候选预算：最多 9 个相邻格子，每格检查 ceil(maxNeighbors/9) 个候选（自身也可能计入）。应使用有限正数。"
+              }
+            },
+            {
+              "name": "className",
+              "type": "string",
+              "required": false,
+              "default": null,
+              "description": {
+                "en": "CSS class forwarded to the canvas.",
+                "zh": "传给 canvas 的 CSS 类名。"
+              }
+            },
+            {
+              "name": "style",
+              "type": "CSSProperties",
+              "required": false,
+              "default": null,
+              "description": {
+                "en": "React inline style merged after built-in defaults. This is the React CSSProperties type, not an arbitrary GPU parameter map.",
+                "zh": "合并在默认样式之后的 React 内联样式。类型是 React CSSProperties，不是任意 GPU 参数映射。"
+              }
+            },
+            {
+              "name": "onReady",
+              "type": "(sim: ParticlesSim) => void",
+              "required": false,
+              "default": null,
+              "description": {
+                "en": "Initial callback after simulation creation and canvas attachment, before the RAF loop starts. Use setForces/setParams for imperative changes; the component owns destruction.",
+                "zh": "模拟创建并绑定画布之后、RAF 循环之前调用的初始回调。可用 setForces/setParams 做命令式更新；销毁由组件负责。"
+              }
+            },
+            {
+              "name": "onReady.sim",
+              "type": "ParticlesSim",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Borrowed simulation handle. Valid only while the component remains mounted.",
+                "zh": "借用的模拟句柄，仅在组件仍挂载期间有效。"
+              }
+            }
+          ],
+          "typeDetails": [
+            {
+              "name": "CSSProperties (React supporting type)",
+              "type": "import('react').CSSProperties",
+              "description": {
+                "en": "Standard React CSS style property type; its full browser/React property catalog is outside wgpu-kit.",
+                "zh": "标准 React CSS 样式属性类型，完整浏览器/React 样式目录不属于 wgpu-kit。"
+              }
+            },
+            {
+              "name": "React key (framework attribute, not ParticleCanvasProps)",
+              "type": "React.Key",
+              "description": {
+                "en": "Use a changed key to remount/recreate the simulation. key is handled by React and is not passed as a normal config field.",
+                "zh": "改变 key 可重新挂载/重建模拟。key 由 React 处理，不作为普通配置字段传入。"
+              }
+            }
+          ],
+          "constraints": [
+            {
+              "en": "All particle fields retain their documented semantics, including actual mode default grid and the maxNeighbors=Infinity limitation. React adds no extra validation.",
+              "zh": "所有粒子字段保留原有语义，包括 mode 实际默认 grid 和 maxNeighbors=Infinity 的限制。React 层不增加额外验证。"
+            }
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/react/index.tsx",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/particles/config.ts"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,370 @@
+{
+  "version": "2.0.0",
+  "verifiedAgainst": "Installed npm package declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989",
+  "entrypoints": [
+    {
+      "path": "wgpu-kit/three",
+      "summary": {
+        "en": "Three.js CPU-snapshot adapter, with explicit ownership and current-version limits.",
+        "zh": "Three.js CPU 快照适配器，明确资源所有权和当前版本限制。"
+      },
+      "exports": [
+        {
+          "name": "threePoints",
+          "kind": "function",
+          "signature": "threePoints(sim: ParticlesSim, THREE: ThreeAPI, opts?: { size?: number; color?: number }): ThreePointsHandle",
+          "description": {
+            "en": "Create a Three.js Points object driven by CPU snapshots of a particle position buffer.",
+            "zh": "创建由粒子位置缓冲 CPU 快照驱动的 Three.js Points 对象。"
+          },
+          "parameters": [
+            {
+              "name": "sim",
+              "type": "ParticlesSim",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Particle simulation; its position-buffer length determines point count. The handle dispose() also destroys this simulation.",
+                "zh": "粒子模拟；其位置缓冲长度决定点数。handle.dispose() 也会销毁此模拟。"
+              }
+            },
+            {
+              "name": "THREE",
+              "type": "ThreeAPI",
+              "required": true,
+              "default": null,
+              "description": {
+                "en": "Injected Three.js constructors; no hard Three.js dependency is installed by this adapter.",
+                "zh": "注入的 Three.js 构造器；适配器不强制安装 Three.js 依赖。"
+              }
+            },
+            {
+              "name": "opts",
+              "type": "{ size?: number; color?: number }",
+              "required": false,
+              "default": "{}",
+              "description": {
+                "en": "Point material options.",
+                "zh": "点材质选项。"
+              }
+            },
+            {
+              "name": "opts.size",
+              "type": "number",
+              "required": false,
+              "default": "0.015",
+              "description": {
+                "en": "Passed to PointsMaterial.size with sizeAttenuation=true.",
+                "zh": "传给 PointsMaterial.size，同时使用 sizeAttenuation=true。"
+              }
+            },
+            {
+              "name": "opts.color",
+              "type": "number",
+              "required": false,
+              "default": "0x8fb4ff",
+              "description": {
+                "en": "Uniform material color; this adapter does not copy per-species colors.",
+                "zh": "统一材质颜色；此适配器不复制各物种颜色。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "ThreePointsHandle",
+            "description": {
+              "en": "A Points handle with asynchronous update and disposal. positions initially contain zeroes until update() completes.",
+              "zh": "包含异步 update 和清理方法的 Points 句柄。update() 完成前位置数组初始为零。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "Each update reads GPU data back to CPU and marks a Three BufferAttribute dirty; it is not a zero-copy WebGPU/TSL bridge. z is fixed at 0.",
+              "zh": "每次 update 将 GPU 数据读回 CPU，并标记 Three BufferAttribute 需要更新；这不是零拷贝 WebGPU/TSL 桥接。z 固定为 0。"
+            },
+            {
+              "en": "Version 2.0.0 captures sim.buffers().pos only once at construction. Particle simulation ping-pong changes the current buffer after tick(), so update() may read the previous step on alternating ticks. Do not promise every update is the newest step.",
+              "zh": "2.0.0 仅在创建时捕获一次 sim.buffers().pos。粒子模拟 tick() 后切换双缓冲当前侧，因此 update() 在交替帧上可能读到上一步。不能承诺每次 update 都是最新一步。"
+            },
+            {
+              "en": "The geometry must provide setAttribute at runtime although ThreeAPI types BufferGeometry as returning unknown. There is no automatic resize, render loop, scene removal, geometry disposal, or material disposal.",
+              "zh": "运行时 geometry 必须提供 setAttribute，虽然 ThreeAPI 将 BufferGeometry 返回值声明为 unknown。不自动处理 resize、渲染循环、移出场景、geometry 清理或 material 清理。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "code": "import * as THREE from 'three';\nimport { particles } from 'wgpu-kit/particles';\nimport { threePoints, type ThreeAPI } from 'wgpu-kit/three';\nconst sim = await particles({ count: 1024 });\nconst handle = threePoints(sim, THREE as unknown as ThreeAPI, { size: 0.02 });\nconst points = handle.points as THREE.Points;\nconst scene = new THREE.Scene();\nscene.add(points);\nawait handle.update(); // Initial snapshot; no tick has changed the buffer.\n// Render scene with your camera and renderer.\nfunction dispose() {\n  scene.remove(points);\n  points.geometry.dispose();\n  const materials = Array.isArray(points.material) ? points.material : [points.material];\n  materials.forEach(material => material.dispose());\n  handle.dispose(); // Also destroys sim.\n}",
+              "caption": {
+                "en": "Create an accurate initial snapshot and explicitly dispose Three resources.",
+                "zh": "创建准确的初始快照，并显式销毁 Three 资源。"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ThreeAPI",
+          "kind": "interface",
+          "signature": "interface ThreeAPI",
+          "description": {
+            "en": "Minimal structural constructor surface injected into threePoints.",
+            "zh": "注入 threePoints 的最小构造器接口。"
+          },
+          "members": [
+            {
+              "name": "Points",
+              "kind": "constructor property",
+              "signature": "Points: new (geometry: unknown, material: unknown) => unknown",
+              "description": {
+                "en": "Construct the returned point cloud.",
+                "zh": "构造返回的点云。"
+              },
+              "parameters": [
+                {
+                  "name": "geometry",
+                  "type": "unknown",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Geometry constructed below, with a position attribute.",
+                    "zh": "下方创建并设置 position 属性的 geometry。"
+                  }
+                },
+                {
+                  "name": "material",
+                  "type": "unknown",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Constructed point material.",
+                    "zh": "构造出的点材质。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "unknown",
+                "description": {
+                  "en": "Usually THREE.Points; retain/cast its concrete type in the application.",
+                  "zh": "通常为 THREE.Points，应用可保留或转换到具体类型。"
+                }
+              }
+            },
+            {
+              "name": "BufferGeometry",
+              "kind": "constructor property",
+              "signature": "BufferGeometry: new () => unknown",
+              "description": {
+                "en": "Construct a geometry; runtime must support setAttribute(name, attribute).",
+                "zh": "构造 geometry；运行时必须支持 setAttribute(name, attribute)。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "unknown",
+                "description": {
+                  "en": "Geometry object.",
+                  "zh": "Geometry 对象。"
+                }
+              }
+            },
+            {
+              "name": "BufferAttribute",
+              "kind": "constructor property",
+              "signature": "BufferAttribute: new (array: Float32Array, itemSize: number) => { set: (arr: ArrayLike<number>) => void; needsUpdate: boolean }",
+              "description": {
+                "en": "Construct a position attribute backed by a Float32Array.",
+                "zh": "创建由 Float32Array 支撑的位置属性。"
+              },
+              "parameters": [
+                {
+                  "name": "array",
+                  "type": "Float32Array",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Backing positions array of count*3 components.",
+                    "zh": "含 count*3 分量的底层位置数组。"
+                  }
+                },
+                {
+                  "name": "itemSize",
+                  "type": "number",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Components per item; adapter passes 3.",
+                    "zh": "每个元素的分量数，适配器传 3。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "{ set: (arr: ArrayLike<number>) => void; needsUpdate: boolean }",
+                "description": {
+                  "en": "Attribute whose needsUpdate is set true after each snapshot. The declared set(arr) method is not called by this adapter.",
+                  "zh": "每次快照后 needsUpdate 被设为 true。声明中的 set(arr) 不被该适配器调用。"
+                }
+              },
+              "typeDetails": [
+                {
+                  "name": "set(arr)",
+                  "type": "(arr: ArrayLike<number>) => void",
+                  "description": {
+                    "en": "Required by the structural declaration; array-like numbers to copy. Unused internally.",
+                    "zh": "结构声明要求的方法；arr 是待复制的类数值数组。内部未调用。"
+                  }
+                },
+                {
+                  "name": "needsUpdate",
+                  "type": "boolean",
+                  "description": {
+                    "en": "Writable flag set true after snapshot copy.",
+                    "zh": "快照复制后设为 true 的可写标记。"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "PointsMaterial",
+              "kind": "constructor property",
+              "signature": "PointsMaterial: new (params: { size?: number; color?: number; sizeAttenuation?: boolean }) => unknown",
+              "description": {
+                "en": "Construct the point material.",
+                "zh": "构造点材质。"
+              },
+              "parameters": [
+                {
+                  "name": "params",
+                  "type": "{ size?: number; color?: number; sizeAttenuation?: boolean }",
+                  "required": true,
+                  "default": null,
+                  "description": {
+                    "en": "Material option object.",
+                    "zh": "材质选项对象。"
+                  }
+                },
+                {
+                  "name": "params.size",
+                  "type": "number",
+                  "required": false,
+                  "default": null,
+                  "description": {
+                    "en": "Point size; adapter supplies opts.size ?? 0.015.",
+                    "zh": "点大小；适配器传 opts.size ?? 0.015。"
+                  }
+                },
+                {
+                  "name": "params.color",
+                  "type": "number",
+                  "required": false,
+                  "default": null,
+                  "description": {
+                    "en": "Color; adapter supplies opts.color ?? 0x8fb4ff.",
+                    "zh": "颜色；适配器传 opts.color ?? 0x8fb4ff。"
+                  }
+                },
+                {
+                  "name": "params.sizeAttenuation",
+                  "type": "boolean",
+                  "required": false,
+                  "default": null,
+                  "description": {
+                    "en": "Perspective size attenuation; adapter explicitly passes true.",
+                    "zh": "透视尺寸衰减；适配器明确传 true。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "unknown",
+                "description": {
+                  "en": "Material object.",
+                  "zh": "材质对象。"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "ThreePointsHandle",
+          "kind": "interface",
+          "signature": "interface ThreePointsHandle",
+          "description": {
+            "en": "Point object and lifecycle returned by threePoints.",
+            "zh": "threePoints 返回的点对象和生命周期方法。"
+          },
+          "members": [
+            {
+              "name": "points",
+              "kind": "property",
+              "signature": "points: unknown",
+              "description": {
+                "en": "Constructed THREE.Points instance, ready to add to a scene.",
+                "zh": "构造出的 THREE.Points 实例，可加入场景。"
+              },
+              "returns": {
+                "type": "unknown",
+                "description": {
+                  "en": "Concrete object from injected THREE.Points.",
+                  "zh": "注入的 THREE.Points 构造器返回的具体对象。"
+                }
+              }
+            },
+            {
+              "name": "update",
+              "kind": "method",
+              "signature": "update(): Promise<void>",
+              "description": {
+                "en": "Read the captured position buffer and copy x/y into the attribute; z=0.",
+                "zh": "读取捕获的位置缓冲，将 x/y 复制到属性，z=0。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "Promise<void>",
+                "description": {
+                  "en": "Resolves after readback and attribute update. It does not render the scene.",
+                  "zh": "读回并更新属性后完成；不渲染场景。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Await updates serially; Buffer.read mapping and captured-buffer limitations apply.",
+                  "zh": "串行 await 更新；需遵守 Buffer.read 映射限制和上述固定缓冲引用限制。"
+                }
+              ],
+              "errors": [
+                {
+                  "en": "GPU readback failures propagate as rejected promises.",
+                  "zh": "GPU 读回失败会传播为 Promise 拒绝。"
+                }
+              ]
+            },
+            {
+              "name": "dispose",
+              "kind": "method",
+              "signature": "dispose(): void",
+              "description": {
+                "en": "Calls sim.destroy().",
+                "zh": "调用 sim.destroy()。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "This destroys the supplied simulation, but does not remove points from its scene or call geometry/material.dispose(). Clean those up separately.",
+                  "zh": "会销毁传入的模拟，但不会把 points 移出场景，也不会调用 geometry/material.dispose()。这些资源须单独清理。"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/interop/three.ts",
+        "https://github.com/nanfengw0w/wgpu-kit/blob/306a7a7233c9de8b433d179ed1164482143a4989/src/packs/particles/index.ts"
+      ]
+    }
+  ]
+}
