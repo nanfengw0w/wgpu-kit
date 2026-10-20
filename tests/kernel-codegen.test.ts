@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateElementKernel } from '../src/core/kernel.ts';
+import { generateElementKernel, type ElementKernelSpec } from '../src/core/kernel.ts';
 import { UsageError } from '../src/core/errors.ts';
 
 describe('generateElementKernel: WGSL 代码生成', () => {
@@ -74,5 +74,61 @@ describe('generateElementKernel: 使用校验', () => {
   it('workgroupSize 默认 64', () => {
     const k = generateElementKernel({ state: { a: 'f32' }, code: 'fn f(i: u32) {}' });
     expect(k.source).toContain('@compute @workgroup_size(64)');
+  });
+});
+
+describe('generateElementKernel: auxInputs', () => {
+  it('辅助只读数组排在 state/inputs 后,保持已有 binding 与 uniform 布局', () => {
+    const k = generateElementKernel({
+      state: { out: 'f32' },
+      inputs: { ids: 'u32' },
+      auxInputs: { table: 'vec2f', weights: 'f32' },
+      code: 'fn userFn(idx: u32) { out[idx] = table[ids[idx]].x * weights[0]; }',
+    });
+    expect(k.source).toContain('@binding(1) var<storage, read_write> out: array<f32>;');
+    expect(k.source).toContain('@binding(2) var<storage, read> ids: array<u32>;');
+    expect(k.source).toContain('@binding(3) var<storage, read> table: array<vec2f>;');
+    expect(k.source).toContain('@binding(4) var<storage, read> weights: array<f32>;');
+    expect(k.uniformLayout.fields.map((field) => field.name)).toEqual(['count']);
+    expect([...k.normalized.usedBindings]).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('拒绝 aux 与其他资源或 uniform 重名,也拒绝只有 aux 的内核', () => {
+    const code = 'fn userFn(idx: u32) {}';
+    const invalidSpecs: ElementKernelSpec[] = [
+      { state: { table: 'f32' }, auxInputs: { table: 'f32' }, code },
+      { inputs: { table: 'f32' }, auxInputs: { table: 'f32' }, code },
+      { state: { out: 'f32' }, uniforms: { table: 'f32' }, auxInputs: { table: 'f32' }, code },
+      { auxInputs: { table: 'f32' }, code },
+    ];
+    for (const spec of invalidSpecs) {
+      expect(() => generateElementKernel(spec)).toThrow(UsageError);
+    }
+  });
+
+  it('仅绑定可达 helper 使用的 aux,注释/死代码/struct 成员不构成使用', () => {
+    const k = generateElementKernel({
+      state: { out: 'f32' },
+      auxInputs: { live: 'f32', commented: 'f32', dead: 'f32', member: 'f32' },
+      code: `struct Item { member: f32, }
+fn unused(idx: u32) -> f32 { return dead[idx]; }
+fn lookup(idx: u32) -> f32 { return live[idx % arrayLength(&live)]; }
+fn userFn(idx: u32) {
+  // commented[0] is deliberately unused.
+  let item = Item(1.0);
+  out[idx] = lookup(idx) + item.member;
+}`,
+    });
+    expect([...k.normalized.usedBindings]).toEqual([0, 1, 2]);
+  });
+
+  it('替换代码时重新分析 aux 使用,绑定编号与用户行号仍然稳定', () => {
+    const spec = { state: { out: 'f32' as const }, auxInputs: { table: 'f32' as const } };
+    const before = generateElementKernel({ ...spec, code: 'fn userFn(idx: u32) { out[idx] = 1.0; }' });
+    const after = generateElementKernel({ ...spec, code: 'fn userFn(idx: u32) { out[idx] = table[0]; }' });
+    expect([...before.normalized.usedBindings]).toEqual([0, 1]);
+    expect([...after.normalized.usedBindings]).toEqual([0, 1, 2]);
+    expect(before.source).toContain('@binding(2) var<storage, read> table: array<f32>;');
+    expect(after.userCodeLineOffset).toBe(before.userCodeLineOffset);
   });
 });

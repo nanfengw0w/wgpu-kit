@@ -1,6 +1,7 @@
 import { GpuContext } from '../core/context.ts';
 import { Buffer } from '../core/buffer.ts';
 import { UsageError, ERR } from '../core/errors.ts';
+import { batchUniform, validateBatch, type ComputeBatch } from '../core/batch.ts';
 
 /**
  * reduce —— u32 求和原语(v2.0 core 原语层)。
@@ -66,10 +67,10 @@ export interface Reduce {
   /**
    * 同步编码:dst[0] = Σ src[0..count)(覆盖语义;先清零后归约,两个 pass)。
    * dst 为含 atomic<u32> 用法的原生 GPUBuffer;count=0 时仅清零。
-   * encode-once-per-submit 合同(与 scan 一致,复审 P1-1):params 共享,
-   * 一次提交前重复 sumInto 会覆盖参数——guard 拒绝;提交后调 endSubmit()。
+   * 不传 batch 时同实例每次提交只能编码一次,提交后调 endSubmit()。
+   * batch 为每次编码分配独立参数,允许同实例重复编码。
    */
-  sumInto(encoder: GPUCommandEncoder, src: GPUBuffer, count: number, dst: GPUBuffer): void;
+  sumInto(encoder: GPUCommandEncoder, src: GPUBuffer, count: number, dst: GPUBuffer, batch?: ComputeBatch): void;
   /** [v2.0] 自定义 submit 流程完成后调用:重置 encode-once 检测 */
   endSubmit(): void;
   /** 高级:解除 encode-once 检测(自行承担参数覆盖语义) */
@@ -83,7 +84,7 @@ export function createReduce(): Reduce {
   let ctx: GpuContext | null = null;
   let pipelines: { pClear: GPUComputePipeline; pReduce: GPUComputePipeline } | null = null;
   let params: GPUBuffer | null = null;
-  // encode-once-per-submit 合同(复审 P1-1)
+  // 仅 legacy 编码使用共享参数和 guard。
   let guardArmed = true;
   let guardOpen = false;
 
@@ -105,28 +106,27 @@ export function createReduce(): Reduce {
       params = device.createBuffer({ size: USIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: 'reduce-params' });
     },
 
-    sumInto(encoder: GPUCommandEncoder, src: GPUBuffer, count: number, dst: GPUBuffer): void {
+    sumInto(encoder: GPUCommandEncoder, src: GPUBuffer, count: number, dst: GPUBuffer, batch?: ComputeBatch): void {
       if (!ctx || !pipelines || !params) {
         throw new UsageError(ERR.USAGE, 'reduce.sumInto called before prepare() — await reduce.prepare() first');
-      }
-      // guard 在参数校验之后打开(P2-1 教训:校验抛错不锁闸)
-      if (guardArmed && guardOpen) {
-        throw new UsageError(ERR.USAGE, 'reduce.sumInto called twice before submit — shared params would be overwritten (encode-once-per-submit contract). Call endSubmit() after your submit, or use reduce.sum().');
       }
       if (!Number.isInteger(count) || count < 0) {
         throw new UsageError(ERR.USAGE, `reduce count must be a non-negative integer, got ${String(count)}`);
       }
-      // WebGPU maxComputeWorkgroupsPerDimension = 65535(第四轮审查 P2):
-      // workgroups = ceil(count / 8192) 不得超过该限制
       if (count > WG * ITEMS * 65535) {
         throw new UsageError(ERR.USAGE, `reduce count ${count} exceeds supported cap ${WG * ITEMS * 65535} (workgroup dispatch limit)`);
       }
-      if (guardArmed) guardOpen = true;
       const device = ctx.device;
+      if (batch) validateBatch(batch, encoder, device);
+      if (!batch && guardArmed && guardOpen) {
+        throw new UsageError(ERR.USAGE, 'reduce.sumInto called twice before submit — shared params would be overwritten (encode-once-per-submit contract). Call endSubmit() after your submit, or use reduce.sum().');
+      }
+      if (!batch && guardArmed) guardOpen = true;
       const b = new ArrayBuffer(USIZE);
       const v = new DataView(b);
       v.setUint32(0, count, true);
-      device.queue.writeBuffer(params, 0, b);
+      const uniform = batch ? batchUniform(batch, encoder, device, b) : { buffer: params };
+      if (!batch) device.queue.writeBuffer(params, 0, b);
 
       const workgroups = Math.ceil(count / (WG * ITEMS));
       // pass① 清零(pass② 的 atomicAdd 需要从 0 起)
@@ -144,7 +144,7 @@ export function createReduce(): Reduce {
       p1.setBindGroup(0, device.createBindGroup({
         layout: pipelines.pReduce.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: params } },
+          { binding: 0, resource: uniform },
           { binding: 1, resource: { buffer: src } },
           { binding: 2, resource: { buffer: dst } },
         ],
@@ -156,10 +156,7 @@ export function createReduce(): Reduce {
     async sum(src: Buffer, count: number): Promise<number> {
       await this.prepare();
       const device = ctx!.device;
-      // 并发安全(第三轮 P1):每次调用私有 scratch——共享 readBuf 的旧实现
-      // 在并发 sum() 时 mapAsync 互撞,共享 dstBuf 更会让并发结果静默相加。
-      // [第四轮 P2] scratch 用 try/finally 管理:任何失败路径(校验拒绝/
-      // 提交失败/mapAsync 拒绝)都不泄漏 GPU 缓冲。
+      // 每次读回使用私有 scratch,异常路径也须释放。
       const scratchDst = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, label: 'reduce-sum-dst' });
       const scratchRead = device.createBuffer({ size: 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ, label: 'reduce-sum-read' });
       try {

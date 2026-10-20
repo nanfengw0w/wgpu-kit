@@ -1,4 +1,4 @@
-import { Buffer, GpuContext, PingPong, elementKernel, rawKernel } from 'wgpu-kit';
+import { Buffer, GpuContext, PingPong, createBatch, elementKernel, type ComputeBatch } from 'wgpu-kit';
 import type { DemoController } from './examples';
 
 export const MATERIALS = [
@@ -83,14 +83,9 @@ fn at(x:i32,y:i32,size:u32)->f32{return pressure[u32(clamp(y,0,i32(size)-1))*siz
 fn userFn(i:u32,size:u32){let x=i32(i%size);let y=i32(i/size);let gradient=vec2f(at(x+1,y,size)-at(x-1,y,size),at(x,y+1,size)-at(x,y-1,size))*0.5*f32(size);next[i]=vec4f(velocity[i].xy-gradient,0,0);}
 `;
 const pigmentCode = `
-struct Params { sizes:vec4u, brush:vec4f, step:vec4f };
-@group(0) @binding(0) var<storage,read> previous:array<vec4f>;
-@group(0) @binding(1) var<storage,read> velocity:array<vec4f>;
-@group(0) @binding(2) var<storage,read_write> next:array<vec4f>;
-@group(0) @binding(3) var<uniform> params:Params;
-fn flow(uv:vec2f)->vec2f{let n=params.sizes.y;let p=clamp(uv*f32(n)-0.5,vec2f(0),vec2f(f32(n)-1.001));let a=vec2u(p);let f=fract(p);return mix(mix(velocity[a.y*n+a.x].xy,velocity[a.y*n+a.x+1u].xy,f.x),mix(velocity[(a.y+1u)*n+a.x].xy,velocity[(a.y+1u)*n+a.x+1u].xy,f.x),f.y);}
-fn pigment(uv:vec2f)->vec4f{let n=params.sizes.x;let p=clamp(uv*f32(n)-0.5,vec2f(0),vec2f(f32(n)-1.001));let a=vec2u(p);let f=fract(p);return mix(mix(previous[a.y*n+a.x],previous[a.y*n+a.x+1u],f.x),mix(previous[(a.y+1u)*n+a.x],previous[(a.y+1u)*n+a.x+1u],f.x),f.y);}
-@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id:vec3u){let n=params.sizes.x;let i=id.x;if(i>=n*n){return;}let uv=(vec2f(f32(i%n),f32(i/n))+0.5)/f32(n);var color=pigment(uv-flow(uv)*params.step.x);let q=uv-params.brush.xy;let brush=exp(-dot(q,q)*3200.0)*params.brush.z;let cream=vec3f(0.95,0.92,0.83);let phase=u32(params.step.y*0.4)%3u;let colors=array<vec3f,3>(vec3f(0.035,0.105,0.20),vec3f(0.72,0.18,0.105),vec3f(0.75,0.48,0.15));if(params.brush.w>0.5){let ink=select(colors[phase],cream,params.brush.w>1.5);color=vec4f(mix(color.rgb,ink,brush*0.5),1);}next[i]=clamp(color,vec4f(0),vec4f(1));}
+fn flow(uv:vec2f,n:u32)->vec2f{let p=clamp(uv*f32(n)-0.5,vec2f(0),vec2f(f32(n)-1.001));let a=vec2u(p);let f=fract(p);return mix(mix(velocity[a.y*n+a.x].xy,velocity[a.y*n+a.x+1u].xy,f.x),mix(velocity[(a.y+1u)*n+a.x].xy,velocity[(a.y+1u)*n+a.x+1u].xy,f.x),f.y);}
+fn pigment(uv:vec2f,n:u32)->vec4f{let p=clamp(uv*f32(n)-0.5,vec2f(0),vec2f(f32(n)-1.001));let a=vec2u(p);let f=fract(p);return mix(mix(previous[a.y*n+a.x],previous[a.y*n+a.x+1u],f.x),mix(previous[(a.y+1u)*n+a.x],previous[(a.y+1u)*n+a.x+1u],f.x),f.y);}
+fn userFn(i:u32,dyeSize:u32,size:u32,hand:vec2f,press:f32,tool:f32,dt:f32,time:f32){let n=dyeSize;let uv=(vec2f(f32(i%n),f32(i/n))+0.5)/f32(n);var color=pigment(uv-flow(uv,size)*dt,n);let q=uv-hand;let brush=exp(-dot(q,q)*3200.0)*press;let cream=vec3f(0.95,0.92,0.83);let phase=u32(time*0.4)%3u;let colors=array<vec3f,3>(vec3f(0.035,0.105,0.20),vec3f(0.72,0.18,0.105),vec3f(0.75,0.48,0.15));if(tool>0.5){let ink=select(colors[phase],cream,tool>1.5);color=vec4f(mix(color.rgb,ink,brush*0.5),1);}next[i]=clamp(color,vec4f(0),vec4f(1));}
 `;
 const pigmentView = `
 @group(0) @binding(0) var<storage,read> pigment:array<vec4f>;
@@ -102,11 +97,10 @@ struct Out { @builtin(position) p:vec4f,@location(0) uv:vec2f };
 
 export const MATERIAL_SOURCES:Record<string,string>={
   'magnetic-tide':`import { PingPong, elementKernel } from 'wgpu-kit';\n\n// A persistent height field follows a localized magnetic target.\nconst size = 160;\nconst field = await PingPong.create({ height: 'f32' }, size * size);\nconst sculpt = elementKernel({\n  state: { next: 'f32' },\n  inputs: { previous: 'f32' },\n  uniforms: { size: 'u32', hand: 'vec2f', strength: 'f32', press: 'f32', dt: 'f32' },\n  code: \`${magneticCode}\`,\n});\nawait sculpt.prepare();\n\n// Submit one step, then render directly from field.current.height.gpuBuffer.\nawait sculpt.run({ next: field.other.height, previous: field.current.height }, {\n  size, hand: { x: 0, y: 0 }, strength: 1, press: 0, dt: 1 / 60,\n});\nfield.swap();`,
-  'pigment-marbling':`import { rawKernel } from 'wgpu-kit';\n\n// Velocity and pigment have different resolutions, so use explicit raw bindings.\n// The full module first advects velocity, solves pressure, and projects flow.\nconst advectPigment = rawKernel(\`${pigmentCode}\`);\nawait advectPigment.prepare();\n\n// In each frame, bind previous pigment, projected velocity, next pigment and\n// the parameter buffer, then encode into the same command encoder.\n// Download materials.ts for the complete fluid solver and resource lifecycle.`,
 };
 
 // The reading view includes every numerical stage used by the live fluid.
-MATERIAL_SOURCES['pigment-marbling'] = `import { Buffer, PingPong, elementKernel, rawKernel } from 'wgpu-kit';
+MATERIAL_SOURCES['pigment-marbling'] = `import { Buffer, PingPong, createBatch, elementKernel } from 'wgpu-kit';
 
 const size = 128;
 const pigmentSize = 512;
@@ -129,11 +123,11 @@ const measure = elementKernel({
 });
 
 // 3. Solve pressure with 20 Jacobi iterations.
-// Distinct instances respect elementKernel's one-encode-per-submit constraint.
-const pressureSteps = Array.from({ length: 20 }, () => elementKernel({
+// One instance uses a distinct parameter snapshot for every batch dispatch.
+const solve = elementKernel({
   state: { next: 'f32' }, inputs: { previous: 'f32', divergence: 'f32' },
   uniforms: { size: 'u32' }, code: \`${pressureCode}\`,
-}));
+});
 
 // 4. Remove the pressure gradient to approximate incompressible flow.
 const project = elementKernel({
@@ -142,48 +136,65 @@ const project = elementKernel({
 });
 
 // 5. Advect the finer pigment grid with that projected velocity.
-// rawKernel permits different buffer lengths and explicit bindings.
-const transport = rawKernel(\`${pigmentCode}\`);
+// auxInputs keeps the velocity resolution independent of the pigment grid.
+const transport = elementKernel({
+  state: { next: 'vec4f' }, inputs: { previous: 'vec4f' },
+  auxInputs: { velocity: 'vec4f' },
+  uniforms: { dyeSize: 'u32', size: 'u32', hand: 'vec2f', press: 'f32', tool: 'f32', dt: 'f32', time: 'f32' },
+  code: \`${pigmentCode}\`,
+});
 await Promise.all([
-  advect.prepare(), measure.prepare(), project.prepare(), transport.prepare(),
-  ...pressureSteps.map(step => step.prepare()),
+  advect.prepare(), measure.prepare(), solve.prepare(), project.prepare(), transport.prepare(),
 ]);
 
 // Each frame uses one command encoder and no simulation readback.
 // Seed both pigment buffers before the first frame; the live study uses
 // indigo, vermilion, gold and ivory bands as its initial condition.
-function encodeFlow(encoder: GPUCommandEncoder, dt: number,
+async function submitFlow(dt: number,
   hand: { x: number; y: number }, movement: { x: number; y: number },
-  pressed: boolean, strength: number, parameters: GPUBuffer) {
+  pressed: boolean, strength: number, tool: number, time: number,
+  render: (encoder: GPUCommandEncoder) => void) {
+  const batch = await createBatch();
+  const encoder = batch.encoder;
+  let velocitySwaps = 0, pressureSwaps = 0, pigmentSwaps = 0;
+  try {
   advect.encode(encoder, {
     next: velocity.other.flow, previous: velocity.current.flow,
-  }, { size, dt, hand, movement, press: pressed ? 1 : 0, strength });
-  velocity.swap();
+  }, { size, dt, hand, movement, press: pressed ? 1 : 0, strength }, { batch });
+  velocity.swap(); velocitySwaps++;
 
-  measure.encode(encoder, { divergence, velocity: velocity.current.flow }, { size });
-  for (const solve of pressureSteps) {
+  measure.encode(encoder, { divergence, velocity: velocity.current.flow }, { size }, { batch });
+  for (let i = 0; i < 20; i++) {
     solve.encode(encoder, {
       next: pressure.other.value, previous: pressure.current.value, divergence,
-    }, { size });
-    pressure.swap();
+    }, { size }, { batch });
+    pressure.swap(); pressureSwaps++;
   }
 
   project.encode(encoder, {
     next: velocity.other.flow, velocity: velocity.current.flow,
     pressure: pressure.current.value,
-  }, { size });
-  velocity.swap();
+  }, { size }, { batch });
+  velocity.swap(); velocitySwaps++;
 
-  transport.encode(encoder, [
-    { binding: 0, resource: { buffer: pigment.current.color.gpuBuffer } },
-    { binding: 1, resource: { buffer: velocity.current.flow.gpuBuffer } },
-    { binding: 2, resource: { buffer: pigment.other.color.gpuBuffer } },
-    { binding: 3, resource: { buffer: parameters } },
-  ], Math.ceil(pigmentSize * pigmentSize / 64));
-  pigment.swap();
+  transport.encode(encoder, {
+    next: pigment.other.color, previous: pigment.current.color, velocity: velocity.current.flow,
+  }, { dyeSize: pigmentSize, size, hand, press: pressed ? 1 : 0, tool, dt, time }, { batch });
+  pigment.swap(); pigmentSwaps++;
+  render(encoder);
+  batch.submit();
+  } catch (error) {
+    if (batch.status !== 'submitted') {
+      if (batch.status === 'open') batch.cancel();
+      if (velocitySwaps % 2) velocity.swap();
+      if (pressureSwaps % 2) pressure.swap();
+      if (pigmentSwaps % 2) pigment.swap();
+    }
+    throw error;
+  }
 }
-// After queue.submit(), call endSubmit() on every encoded elementKernel.
-// Download materials.ts for parameter packing, rendering, input and cleanup.
+// submitFlow appends rendering before submission; batch dispatches need no endSubmit().
+// Download materials.ts for rendering, input and cleanup.
 `;
 
 export async function mountMaterial(id:string,canvas:HTMLCanvasElement,onStatus:(s:string)=>void,options:{reducedMotion?:boolean;theme?:string}={}):Promise<DemoController>{
@@ -194,32 +205,67 @@ export async function mountMaterial(id:string,canvas:HTMLCanvasElement,onStatus:
   const velocity=fluid?await PingPong.create({flow:'vec4f'},size*size):null;
   const pigment=fluid?await PingPong.create({color:'vec4f'},dyeSize*dyeSize):null;
   const divergence=fluid?await Buffer.create('f32',size*size):null;
-  const uniform=device.createBuffer({size:48,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
   const view=device.createBuffer({size:32,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+  if(fluid)device.queue.writeBuffer(view,0,new Uint32Array([dyeSize,size,0,0]));
   const magnetic=!fluid?elementKernel({name:'magnetic-height-field',state:{next:'f32'},inputs:{previous:'f32'},uniforms:{size:'u32',hand:'vec2f',strength:'f32',press:'f32',dt:'f32'},code:magneticCode}):null;
   const advect=fluid?elementKernel({name:'marbling-velocity-advection',state:{next:'vec4f'},inputs:{previous:'vec4f'},uniforms:{size:'u32',dt:'f32',hand:'vec2f',movement:'vec2f',press:'f32',strength:'f32'},code:advectVelocity}):null;
   const div=fluid?elementKernel({name:'marbling-divergence',state:{divergence:'f32'},inputs:{velocity:'vec4f'},uniforms:{size:'u32'},code:divergenceCode}):null;
-  const pressure=fluid?Array.from({length:20},(_,i)=>elementKernel({name:'marbling-pressure-'+i,state:{next:'f32'},inputs:{previous:'f32',divergence:'f32'},uniforms:{size:'u32'},code:pressureCode})):[];
+  const pressure=fluid?elementKernel({name:'marbling-pressure',state:{next:'f32'},inputs:{previous:'f32',divergence:'f32'},uniforms:{size:'u32'},code:pressureCode}):null;
   const project=fluid?elementKernel({name:'marbling-project',state:{next:'vec4f'},inputs:{velocity:'vec4f',pressure:'f32'},uniforms:{size:'u32'},code:projectCode}):null;
-  const dye=fluid?rawKernel(pigmentCode,'main','marbling-pigment-advection'):null;
-  const kernels=[magnetic,advect,div,...pressure,project].filter(Boolean) as NonNullable<typeof magnetic>[];
-  await Promise.all([...kernels.map(k=>k.prepare()),dye?.prepare()]);
+  const dye=fluid?elementKernel({name:'marbling-pigment-advection',state:{next:'vec4f'},inputs:{previous:'vec4f'},auxInputs:{velocity:'vec4f'},uniforms:{dyeSize:'u32',size:'u32',hand:'vec2f',press:'f32',tool:'f32',dt:'f32',time:'f32'},code:pigmentCode}):null;
+  const kernels=[magnetic,advect,div,pressure,project,dye].filter(Boolean) as NonNullable<typeof magnetic>[];
+  await Promise.all(kernels.map(k=>k.prepare()));
   const module=device.createShaderModule({code:fluid?pigmentView:magneticView});
   const pipeline=await device.createRenderPipelineAsync({layout:'auto',vertex:{module,entryPoint:'vs'},fragment:{module,entryPoint:'fs',targets:[{format}]},primitive:{topology:'triangle-list',cullMode:'none'},...(!fluid?{depthStencil:{format:'depth24plus' as GPUTextureFormat,depthWriteEnabled:true,depthCompare:'less' as GPUCompareFunction}}:{})});
-  const bindings=new Map<GPUBuffer,GPUBindGroup>();for(const buffer of fluid?[pigment!.current.color.gpuBuffer,pigment!.other.color.gpuBuffer]:[field.current.height.gpuBuffer,field.other.height.gpuBuffer])bindings.set(buffer,device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer}},{binding:1,resource:{buffer:fluid?uniform:view,offset:0,size:fluid?16:32}}]}));
-  let dead=false,paused=!!options.reducedMotion,dirty=true,visible=true,frame=0,last=0,time=0,amount:number=spec.value,tool=0,light=options.theme==='light'?1:0,down=false;
+  const bindings=new Map<GPUBuffer,GPUBindGroup>();for(const buffer of fluid?[pigment!.current.color.gpuBuffer,pigment!.other.color.gpuBuffer]:[field.current.height.gpuBuffer,field.other.height.gpuBuffer])bindings.set(buffer,device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer}},{binding:1,resource:{buffer:view,offset:0,size:fluid?16:32}}]}));
+  let dead=false,paused=!!options.reducedMotion,dirty=true,visible=true,frame=0,drawing=false,last=0,time=0,amount:number=spec.value,tool=0,light=options.theme==='light'?1:0,down=false;
   let hand={x:0.5,y:0.5},movement={x:0,y:0};let depth:GPUTexture|undefined,w=0,h=0;
   const seed=()=>{for(const side of[field.current,field.other])side.height.write(new Float32Array(size*size));if(fluid){for(const side of[velocity!.current,velocity!.other])side.flow.write(new Float32Array(size*size*4));const data=new Float32Array(dyeSize*dyeSize*4);const colors=[[0.95,0.92,0.83],[0.035,0.105,0.20],[0.95,0.92,0.83],[0.72,0.18,0.105],[0.95,0.92,0.83],[0.75,0.48,0.15]];for(let y=0;y<dyeSize;y++)for(let x=0;x<dyeSize;x++){const u=x/dyeSize,v=y/dyeSize;const bands=(u+0.19*Math.sin(v*8.0)+0.028*Math.cos(v*39.0+u*4.0))*16;const k=((Math.floor(bands)%6)+6)%6;const i=(y*dyeSize+x)*4;const f=bands-Math.floor(bands);const t=Math.min(1,f/0.045);const blend=t*t*(3-2*t);const previous=colors[(k+5)%6];data.set([...colors[k].map((c,j)=>previous[j]+(c-previous[j])*blend),1],i);}for(const side of[pigment!.current,pigment!.other])side.color.write(data);}};seed();
-  const request=()=>{if(!frame&&!dead&&visible&&!document.hidden)frame=requestAnimationFrame(draw);};
-  function draw(now:number){frame=0;if(dead||!visible||document.hidden)return;if(paused&&!dirty)return;const dt=last?Math.min(1/30,(now-last)/1000):1/60;last=now;time+=dt;dirty=false;const r=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,1.5);const width=Math.max(1,Math.round(r.width*dpr)),height=Math.max(1,Math.round(r.height*dpr));if(width!==w||height!==h){canvas.width=w=width;canvas.height=h=height;depth?.destroy();if(!fluid)depth=device.createTexture({size:[w,h],format:'depth24plus',usage:GPUTextureUsage.RENDER_ATTACHMENT});}
-    try{const enc=device.createCommandEncoder();if(fluid){advect!.encode(enc,{next:velocity!.other.flow,previous:velocity!.current.flow},{size,dt,hand,movement,press:down?1:0,strength:amount});velocity!.swap();div!.encode(enc,{divergence:divergence!,velocity:velocity!.current.flow},{size});for(const solve of pressure){solve.encode(enc,{next:field.other.height,previous:field.current.height,divergence:divergence!},{size});field.swap();}project!.encode(enc,{next:velocity!.other.flow,velocity:velocity!.current.flow,pressure:field.current.height},{size});velocity!.swap();const bytes=new ArrayBuffer(48);new Uint32Array(bytes,0,4).set([dyeSize,size,0,0]);new Float32Array(bytes,16,8).set([hand.x,hand.y,down?1:0,tool,dt,time,0,0]);device.queue.writeBuffer(uniform,0,bytes);dye!.encode(enc,[{binding:0,resource:{buffer:pigment!.current.color.gpuBuffer}},{binding:1,resource:{buffer:velocity!.current.flow.gpuBuffer}},{binding:2,resource:{buffer:pigment!.other.color.gpuBuffer}},{binding:3,resource:{buffer:uniform}}],Math.ceil(dyeSize*dyeSize/64));pigment!.swap();}else{magnetic!.encode(enc,{next:field.other.height,previous:field.current.height},{size,hand:{x:(hand.x-0.5)*2.0,y:(hand.y-0.5)*2.0},strength:amount,press:down?1:0,dt:paused&&time<=dt+0.000001?1:dt});field.swap();device.queue.writeBuffer(view,0,new Float32Array([w,h,time,light,size,0,0,0]));}
-    const clear=light>0.5?{r:0.94,g:0.925,b:0.88,a:1}:{r:0.025,g:0.033,b:0.046,a:1};const pass=enc.beginRenderPass({colorAttachments:[{view:surface!.getCurrentTexture().createView(),loadOp:'clear',storeOp:'store',clearValue:clear}],...(!fluid?{depthStencilAttachment:{view:depth!.createView(),depthClearValue:1,depthLoadOp:'clear' as GPULoadOp,depthStoreOp:'store' as GPUStoreOp}}:{})});pass.setPipeline(pipeline);pass.setBindGroup(0,bindings.get(fluid?pigment!.current.color.gpuBuffer:field.current.height.gpuBuffer)!);pass.draw(fluid?3:(size-1)*(size-1)*6);pass.end();device.queue.submit([enc.finish()]);for(const kernel of kernels)kernel.endSubmit();movement.x*=0.3;movement.y*=0.3;if(!paused)request();}
-    catch(e){for(const kernel of kernels)kernel.endSubmit();paused=true;onStatus('GPU error: '+String(e));}
+  const request=()=>{if(!frame&&!drawing&&!dead&&visible&&!document.hidden)frame=requestAnimationFrame(draw);};
+  async function draw(now:number){
+    frame=0;if(dead||!visible||document.hidden||paused&&!dirty)return;
+    drawing=true;let batch:ComputeBatch|undefined;let fieldSwaps=0,velocitySwaps=0,pigmentSwaps=0;
+    try{
+      batch=await createBatch();
+      if(dead||!visible||document.hidden){batch.cancel();return;}
+      const dt=last?Math.min(1/30,(now-last)/1000):1/60;last=now;time+=dt;dirty=false;
+      const r=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,1.5);
+      const width=Math.max(1,Math.round(r.width*dpr)),height=Math.max(1,Math.round(r.height*dpr));
+      if(width!==w||height!==h){canvas.width=w=width;canvas.height=h=height;depth?.destroy();if(!fluid)depth=device.createTexture({size:[w,h],format:'depth24plus',usage:GPUTextureUsage.RENDER_ATTACHMENT});}
+      const enc=batch.encoder;
+      if(fluid){
+        advect!.encode(enc,{next:velocity!.other.flow,previous:velocity!.current.flow},{size,dt,hand,movement,press:down?1:0,strength:amount},{batch});
+        velocity!.swap();velocitySwaps++;
+        div!.encode(enc,{divergence:divergence!,velocity:velocity!.current.flow},{size},{batch});
+        for(let i=0;i<20;i++){
+          pressure!.encode(enc,{next:field.other.height,previous:field.current.height,divergence:divergence!},{size},{batch});
+          field.swap();fieldSwaps++;
+        }
+        project!.encode(enc,{next:velocity!.other.flow,velocity:velocity!.current.flow,pressure:field.current.height},{size},{batch});
+        velocity!.swap();velocitySwaps++;
+        dye!.encode(enc,{next:pigment!.other.color,previous:pigment!.current.color,velocity:velocity!.current.flow},{dyeSize,size,hand,press:down?1:0,tool,dt,time},{batch});
+        pigment!.swap();pigmentSwaps++;
+      }else{
+        magnetic!.encode(enc,{next:field.other.height,previous:field.current.height},{size,hand:{x:(hand.x-0.5)*2.0,y:(hand.y-0.5)*2.0},strength:amount,press:down?1:0,dt:paused&&time<=dt+0.000001?1:dt},{batch});
+        field.swap();fieldSwaps++;
+        device.queue.writeBuffer(view,0,new Float32Array([w,h,time,light,size,0,0,0]));
+      }
+      const clear=light>0.5?{r:0.94,g:0.925,b:0.88,a:1}:{r:0.025,g:0.033,b:0.046,a:1};
+      const pass=enc.beginRenderPass({colorAttachments:[{view:surface!.getCurrentTexture().createView(),loadOp:'clear',storeOp:'store',clearValue:clear}],...(!fluid?{depthStencilAttachment:{view:depth!.createView(),depthClearValue:1,depthLoadOp:'clear' as GPULoadOp,depthStoreOp:'store' as GPUStoreOp}}:{})});
+      pass.setPipeline(pipeline);pass.setBindGroup(0,bindings.get(fluid?pigment!.current.color.gpuBuffer:field.current.height.gpuBuffer)!);pass.draw(fluid?3:(size-1)*(size-1)*6);pass.end();
+      batch.submit();movement.x*=0.3;movement.y*=0.3;
+    }catch(e){
+      if(batch&&batch.status!=='submitted'){
+        if(batch.status==='open')batch.cancel();
+        if(fieldSwaps%2)field.swap();if(velocitySwaps%2)velocity!.swap();if(pigmentSwaps%2)pigment!.swap();
+      }
+      if(!dead){paused=true;dirty=false;onStatus('GPU error: '+String(e));}
+    }finally{drawing=false;if(!paused||dirty)request();}
   }
   const abort=new AbortController(),signal=abort.signal;const previousTouch=canvas.style.touchAction;canvas.style.touchAction='none';
   const pointer=(event:PointerEvent)=>{const r=canvas.getBoundingClientRect(),x=Math.max(0,Math.min(1,(event.clientX-r.left)/r.width)),y=Math.max(0,Math.min(1,(event.clientY-r.top)/r.height));movement={x:Math.max(-0.04,Math.min(0.04,x-hand.x)),y:Math.max(-0.04,Math.min(0.04,y-hand.y))};hand={x,y};dirty=true;request();};
   canvas.addEventListener('pointermove',pointer,{signal});canvas.addEventListener('pointerdown',e=>{pointer(e);down=true;movement={x:0,y:0};canvas.setPointerCapture(e.pointerId);dirty=true;request();},{signal});for(const type of['pointerup','pointercancel','lostpointercapture'])canvas.addEventListener(type,()=>{down=false;movement={x:0,y:0};dirty=true;request();},{signal});
   canvas.addEventListener('keydown',e=>{let dx=0,dy=0;if(e.key==='ArrowLeft')dx=-0.025;else if(e.key==='ArrowRight')dx=0.025;else if(e.key==='ArrowUp')dy=-0.025;else if(e.key==='ArrowDown')dy=0.025;else return;e.preventDefault();hand={x:Math.max(0,Math.min(1,hand.x+dx)),y:Math.max(0,Math.min(1,hand.y+dy))};movement={x:dx,y:dy};down=true;dirty=true;request();},{signal});canvas.addEventListener('keyup',()=>{down=false;},{signal});
-  const observer=new IntersectionObserver(entries=>{visible=entries[0]?.isIntersecting??true;last=0;if(!visible&&frame){cancelAnimationFrame(frame);frame=0;}else request();});observer.observe(canvas);const resize=new ResizeObserver(()=>{dirty=true;request();});resize.observe(canvas);document.addEventListener('visibilitychange',()=>{last=0;if(document.hidden&&frame){cancelAnimationFrame(frame);frame=0;}else{dirty=true;request();}},{signal});const error=(e:GPUUncapturedErrorEvent)=>{paused=true;onStatus('GPU error: '+e.error.message);};device.addEventListener('uncapturederror',error);request();onStatus('Live WebGPU · wgpu-kit 2.0.1');
-  return{destroy(){if(dead)return;dead=true;cancelAnimationFrame(frame);abort.abort();observer.disconnect();resize.disconnect();device.removeEventListener('uncapturederror',error);canvas.style.touchAction=previousTouch;for(const k of kernels)k.destroy();dye?.destroy();field.destroy();velocity?.destroy();pigment?.destroy();divergence?.destroy();uniform.destroy();view.destroy();depth?.destroy();surface.unconfigure();},setPaused(value){paused=value;last=0;dirty=true;request();},reset(){seed();time=0;hand={x:0.5,y:0.5};movement={x:0,y:0};amount=spec.value;dirty=true;request();},setParameter(key,value){if(key==='amount')amount=value;if(key==='tool')tool=value;if(key==='theme')light=value;dirty=true;request();}};
+  const observer=new IntersectionObserver(entries=>{visible=entries[0]?.isIntersecting??true;last=0;if(!visible&&frame){cancelAnimationFrame(frame);frame=0;}else request();});observer.observe(canvas);const resize=new ResizeObserver(()=>{dirty=true;request();});resize.observe(canvas);document.addEventListener('visibilitychange',()=>{last=0;if(document.hidden&&frame){cancelAnimationFrame(frame);frame=0;}else{dirty=true;request();}},{signal});const error=(e:GPUUncapturedErrorEvent)=>{paused=true;onStatus('GPU error: '+e.error.message);};device.addEventListener('uncapturederror',error);request();onStatus('Live WebGPU · wgpu-kit 2.1.0');
+  return{destroy(){if(dead)return;dead=true;cancelAnimationFrame(frame);abort.abort();observer.disconnect();resize.disconnect();device.removeEventListener('uncapturederror',error);canvas.style.touchAction=previousTouch;for(const k of kernels)k.destroy();field.destroy();velocity?.destroy();pigment?.destroy();divergence?.destroy();view.destroy();depth?.destroy();surface.unconfigure();},setPaused(value){paused=value;last=0;dirty=true;request();},reset(){seed();time=0;hand={x:0.5,y:0.5};movement={x:0,y:0};amount=spec.value;dirty=true;request();},setParameter(key,value){if(key==='amount')amount=value;if(key==='tool')tool=value;if(key==='theme')light=value;dirty=true;request();}};
 }

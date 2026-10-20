@@ -3,13 +3,13 @@
 # wgpu-kit API 参考
 
 > 面向 TypeScript 的 WebGPU 计算工具，需要支持 WebGPU 的浏览器。计算核心无运行时依赖。
-> 版本:v2.0 · [English reference](API.md)
+> 版本:v2.1.0 · [English reference](API.md)
 
 **入口总览**
 
 | 入口 | 内容 |
 | --- | --- |
-| [wgpu-kit](#wgpu-kit--kernel-核心) | GpuContext(含 adopt)· Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · createScan · createReduce · 错误类 |
+| [wgpu-kit](#wgpu-kit--kernel-核心) | GpuContext(含 adopt)· Buffer · elementKernel · typedElementKernel · createBatch · PingPong · rawKernel · defineSchema · definePack · createScan · createReduce · 错误类 |
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | 粒子生命模拟 |
 | [wgpu-kit/grid](#wgpu-kitgrid--通用空间邻域) | 通用空间邻域(计数排序哈希;v2.0 编码合同) |
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
@@ -17,6 +17,9 @@
 | [wgpu-kit/media](#wgpu-kitmedia--canvasrecorder) | 画布录制 |
 | [wgpu-kit/vite](#wgpu-kitvite--kernel-热重载) | kernel 热重载插件 |
 | [wgpu-kit/observe](#wgpu-kitobserve--可观测性) | 计时、设备回调和画布助手 |
+
+`auxInputs`、dispatch count、托管批次与 `typedElementKernel` 已随 2.1.0 发布。
+导入的 API 审计仍以 npm 2.0.0 为历史基线，2.1.0 新增能力依据对应源码文件记录。
 
 ---
 
@@ -168,6 +171,7 @@ await integrate.replace(`
 | name | string | 调试名(错误信息中出现) | `'kernel'` |
 | state | Record\<string, ScalarKind\> | **读写**缓冲字段 | `{}` |
 | inputs | Record\<string, ScalarKind\> | **只读**缓冲字段 | `{}` |
+| auxInputs | Record\<string, ScalarKind\> | 长度独立的**只读**辅助缓冲，不参与 dispatch 数量推导 | `{}` |
 | uniforms | Record\<string, ScalarKind\> | uniform 字段类型(声明 ScalarKind;值支持 vec2/3/4 向量) | `{}` |
 | workgroupSize | number | workgroup 大小,1..512 | `64` |
 | code | string | 用户 WGSL 函数,**必须命名 `userFn`** | 必填 |
@@ -177,9 +181,10 @@ await integrate.replace(`
 1. 函数必须命名为 **`userFn`**(这是唯一约定,库按此生成调用);
 2. 第一个参数固定 `idx: u32`;
 3. 其后参数按 `uniforms` 声明顺序自动注入;
-4. `state`/`inputs` 字段名在函数体内即数组,直接 `name[idx]` 访问;
-5. `count` 是保留名(uniform 由库自动注入并做越界保护);
-6. state 与 inputs 的字段名不能重复。
+4. `state`/`inputs`/`auxInputs` 字段名在函数体内即数组，直接索引访问;
+5. `count` 是保留 uniform 名，由首个 state/input 长度或 `options.count` 自动注入;
+6. state、inputs、auxInputs、uniforms 之间的字段名不能重复;
+7. 至少声明一个 `state` 或 `inputs` 字段，不能仅用 `auxInputs` 定义迭代域。
 
 **词法分析边界(已知限制)**:资源使用检测会先剥离注释、`struct` 声明体、
 成员访问(`.字段`)与不可达 helper;但**遮蔽**资源名的局部变量
@@ -200,32 +205,87 @@ WGSL 解析器不在承诺范围内,见 defineSchema 的诚实边界)。
 
 ### 方法
 
-##### .run ( resources, uniforms? ) : Promise\<void\>
+##### .run ( resources, uniforms?, options? ) : Promise\<void\>
 
 执行一次：准备管线、编码并提交。返回的 Promise 不等待 GPU 完成；
 CPU 需要完成结果时，使用数据读回或 `GpuContext.sync()`。
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
-| resources | Record\<string, Buffer\> | state/inputs 全部字段 → Buffer 映射 |
+| resources | Record\<string, Buffer\> | state/inputs/auxInputs 全部字段 → 类型匹配且属于共享设备的 Buffer 映射 |
 | uniforms | Record\<string, UniformValue\> | uniform 值(标量或 {x,y,z?,w?} 向量,须与声明一致;v2.0 起支持向量) |
+| options | ElementKernelDispatchOptions | 可选 dispatch 数量；没有 uniform 时第二个参数传 `undefined` |
 
-抛出:`UsageError`(缺资源/类型不匹配/长度不一致)、`CompileError`(WGSL 编译失败,**行号映射回你的 code**)。
+抛出:`UsageError`(缺资源/类型不匹配/count 非法/容量不足/超出 dispatch 上限)、`CompileError`(WGSL 编译失败,**行号映射回你的 code**)。
+
+### Dispatch 选项与辅助输入
+
+`ElementKernelDispatchOptions` 是导出类型：`{ count?: number }`。
+省略 `count` 时保留默认行为：所有 `state`、`inputs` 缓冲必须等长，
+dispatch 数量取第一个此类缓冲的长度。显式传入 `0..0xffffffff` 范围内的
+整数 `count` 时，这些缓冲可不同长，但每个缓冲都必须至少容纳 `count` 个元素。
+两种模式下，`ceil(count / workgroupSize)` 均不得超过设备的
+`maxComputeWorkgroupsPerDimension`。
+
+`auxInputs` 的长度独立，不影响数量推导或逐元素容量校验。每个声明的辅助缓冲
+仍必须提供并校验类型，即使着色器未使用它。参与绑定的资源须属于共享设备。辅助索引边界由 WGSL
+代码负责；可用 `arrayLength(&weights)` 查询辅助数组长度。生成的调用保护
+只限制迭代索引。
+
+`count: 0` 完整校验资源、uniform 与选项后，不编码、不提交，
+也不消耗或清除已有的 encode-once 检查状态。
+
+```ts
+import { Buffer, elementKernel } from 'wgpu-kit';
+import type { ElementKernelDispatchOptions } from 'wgpu-kit';
+
+const output = await Buffer.create('f32', 6);
+const source = await Buffer.create('f32', 4);
+const weights = await Buffer.create('f32', 3);
+source.write(new Float32Array([1, 2, 3, 4]));
+weights.write(new Float32Array([10, 20, 30]));
+
+const scale = elementKernel({
+  state: { output: 'f32' },
+  inputs: { source: 'f32' },
+  auxInputs: { weights: 'f32' },
+  code: `fn userFn(i: u32) {
+    output[i] = source[i] * weights[i % arrayLength(&weights)];
+  }`,
+});
+const options: ElementKernelDispatchOptions = { count: 4 };
+await scale.run({ output, source, weights }, undefined, options);
+console.log(Array.from(await output.read())); // [10, 40, 90, 40, 0, 0]
+scale.destroy();
+output.destroy(); source.destroy(); weights.destroy();
+```
 
 ##### .prepare ( ) : Promise\<void\> —— v2.0
 
 幂等异步准备:解析上下文、编译管线、分配内部资源。必须在 `encode` 前完成。
 
-##### .encode ( encoder : GPUCommandEncoder, resources, uniforms? ) : void —— v2.0
+##### .encode ( encoder : GPUCommandEncoder, resources, uniforms?, options? ) : void —— v2.0
 
 同步编码:把 dispatch 写入**你的** encoder(不提交)。多个 kernel 可组成同
-一条计算链。**encode-once-per-submit 合同**:同一实例的共享 uniform 快照
-在一次提交前只能 encode 一次,重复会抛 `UsageError`;自定义 submit 后调用
+一条计算链。`options` 使用导出的 `ElementKernelEncodeOptions` 类型：
+`{ count?: number; batch?: ComputeBatch }`。
+
+**原生路径（省略 `options.batch`）的 encode-once-per-submit 合同**:同一实例的共享 uniform 快照
+在一次提交前只能进行一次非零 count 的 encode，重复会抛 `UsageError`;自定义 submit 后调用
 `.endSubmit()` 重置(`.resetEncodeGuard()` 可整体解除)。
+
+`resources`、`uniforms`、`options` 的校验与数量规则同 `run()`。
+例如 `scale.encode(encoder, resources, undefined, { count: 4 })` 编码四次调用；
+提交原生 encoder 后仍须调用 `endSubmit()`。使用 `{ count: 4, batch }` 时，
+传入 `batch.encoder` 并调用 `batch.submit()`，同一实例可反复编码，无需 `endSubmit()`。
 
 ##### .endSubmit ( ) : void —— v2.0
 
-自定义 submit 流程完成后调用:重置 encode-once 检测。
+自定义原生 submit 流程完成后调用：重置 encode-once 检测。托管批次不会使用或改变该闸。
+
+##### .resetEncodeGuard ( ) : void
+
+高级：永久解除原生路径的闸，由调用方承担 uniform 覆盖风险。托管批次已有独立快照，无需解除。
 
 ##### .replace ( code : string ) : Promise\<void\>
 
@@ -237,10 +297,83 @@ CPU 需要完成结果时，使用数据读回或 `GpuContext.sync()`。
 
 ---
 
+## 托管批次与类型化内核（2.1.0）
+
+`createBatch(): Promise<ComputeBatch>` 在共享设备上创建一次提交作用域。
+先等待每个内核的 `prepare()`，再向 `batch.encoder` 编码，并在第四个参数传入
+`{ batch }`。`ElementKernelEncodeOptions` 在 `ElementKernelDispatchOptions`
+基础上增加 `batch?: ComputeBatch`；`run()` 仍只接收 `{ count?: number }`
+dispatch 选项，并在内部提交。
+
+| ComputeBatch 成员 | 契约 |
+| --- | --- |
+| `readonly encoder: GPUCommandEncoder` | open 时可追加计算或原生 pass；编码助手须在没有打开 pass 时调用 |
+| `readonly status: 'open' \| 'submitted' \| 'cancelled'` | 提交生命周期，初始为 `open` |
+| `submit(): void` | 结束编码并提交一次；返回时不保证 GPU 已完成 |
+| `cancel(): void` | 丢弃 open 批次；重复取消幂等；取消 submitted 批次抛 `UsageError` |
+
+批次拥有提交权，请勿自行 finish 或提交 `batch.encoder`。对已关闭批次再次提交，
+或在 submit/cancel 后继续编码托管任务，均抛 `UsageError`。内核与资源须使用同一
+共享设备。CPU 需要完成结果时，通过读回或 `GpuContext.sync()` 等待。
+
+每次托管 dispatch 都有独立的 uniform 快照，同一实例或多个实例可以在一个批次中
+使用不同参数反复编码。这条路径不消耗或重置原生 encode-once 闸，也不需要
+`endSubmit()`。对齐参数 arena 与临时存储使用按设备划分且有上限的池；提交后的
+资源仅在 GPU 完成后才能复用。`cancel()` 丢弃已编码命令，但不会回滚外部 CPU
+写入、此前提交，或 `PingPong.swap()` 等调用。
+
+`typedElementKernel<const S extends ElementKernelSpec>(spec: S): TypedElementKernel<S>`
+是可选的 TypeScript 严格调用入口。从 `state`、`inputs`、`auxInputs` 推导资源名
+与 Buffer kind，从 `uniforms` 推导标量／向量值；声明了 uniform 时调用必须提供。
+导出的 `TypedElementKernelResources<S>` 与 `TypedElementKernelUniforms<S>`
+暴露这两类映射。单独保存 spec 时应保留字段 kind 的字面量类型。原有
+`elementKernel` 与宽泛 `Record` 调用保持兼容。类型层不检查 WGSL 函数体，
+仍由着色器编译器检查。
+
+下面的完整示例在一个批次中用同一个类型化内核执行 20 轮 PingPong，每轮 uniform
+不同，只处理前四个元素，并读取长度独立的辅助表。仅在最终读回时等待：
+
+```ts
+import { Buffer, PingPong, createBatch, typedElementKernel } from 'wgpu-kit';
+
+const state = await PingPong.create({ value: 'f32' }, 6);
+const weights = await Buffer.create('f32', 3);
+state.current.value.write(new Float32Array([1, 2, 3, 4, 0, 0]));
+weights.write(new Float32Array([1, 2, 3]));
+
+const step = typedElementKernel({
+  state: { next: 'f32' },
+  inputs: { previous: 'f32' },
+  auxInputs: { weights: 'f32' },
+  uniforms: { delta: 'f32' },
+  code: `fn userFn(i: u32, delta: f32) {
+    next[i] = previous[i] + weights[i % arrayLength(&weights)] * delta;
+  }`,
+});
+await step.prepare();
+const batch = await createBatch();
+for (let iteration = 0; iteration < 20; iteration++) {
+  step.encode(batch.encoder, {
+    next: state.other.value,
+    previous: state.current.value,
+    weights,
+  }, { delta: iteration + 1 }, { count: 4, batch });
+  state.swap();
+}
+batch.submit();
+console.log(Array.from(await state.current.value.read()));
+// [211, 422, 633, 214, 0, 0]
+step.destroy(); state.destroy(); weights.destroy();
+```
+
 ## PingPong
 
 迭代式模拟的双缓冲管理。读"当前侧"、写"另一侧",帧末 `swap()` 翻转,
 避免读写冲突——粒子/流体/元胞自动机类模拟的刚需抽象。
+
+2.1.0 在 `current`、`other`、`clone()` 中保留
+`PingPong.create({ value: 'f32' }, n)` 的 Buffer kind 字面量，可直接传给
+`typedElementKernel`。现有 `PingPong<K>` 与显式字段名泛型调用保持兼容。
 
 ### 构造
 
@@ -690,9 +823,9 @@ hotKernel(k, import.meta.hot, './sim.wgsl');
 | .cellFill | Buffer (readonly) | 各格结束槽位 |
 | .order | Buffer (readonly) | 按格子序排列的实体下标 |
 | .prepare ( ) : Promise\<void\> —— v2.0 | 幂等准备(解析内部 scan 原语) |
-| .encode ( encoder : GPUCommandEncoder, pos : Buffer ) : void —— v2.0 | counts → scan → post → scatter 写入**你的** encoder(不提交;可与力 kernel 组成计算链) |
+| .encode ( encoder : GPUCommandEncoder, pos : Buffer, batch? : ComputeBatch ) : void | counts → scan → post → scatter 写入**你的** encoder(不提交;可与力 kernel 组成计算链) |
 | .update ( pos : Buffer ) : void | 便捷路径 = 内部 encoder + 提交 |
-| .endSubmit ( ) : void —— v2.0 | 自定义 submit 后重置内部 scan 的 encode-once 闸 |
+| .endSubmit ( ) : void —— v2.0 | 自定义原生 submit 后重置内部 scan 的 encode-once 闸 |
 | .destroy ( ) : void | 释放 |
 
 ### 代码示例
@@ -704,6 +837,11 @@ const grid = await createNeighborGrid({ count: 100_000, worldHalf: 1.0, cellSize
 // 每帧:先建格,再在你的力 kernel 里读 cellStart/cellFill/order
 grid.update(posBuffer);
 ```
+
+托管组合时先等待 `grid.prepare()`，再调用
+`grid.encode(batch.encoder, posBuffer, batch)`，最后 `batch.submit()`。此路径不需要
+`endSubmit()`，同一实例可重复建格。必须在下一次建格覆盖前消费 `cellStart`、
+`cellFill`、`order`；内部 scratch 独立不代表这些公开输出成为快照。
 
 ---
 
@@ -747,19 +885,20 @@ console.log(`GPU: ${ms.toFixed(2)} ms/frame`);
 
 u32 前缀和 `scan` 在不超过 65536 个元素时使用单 workgroup 路径，更大输入使用
 三个 pass。u32 归约 `reduce` 的 `sumInto` 将结果保留在 GPU 上，`sum` 提供
-CPU 读回。两者与 kernel 一致：每个实例在一次提交前编码一次，提交后调用
-`endSubmit()` 重置。
+CPU 读回。不传 batch 时遵循原生 encode-once 合同：每个实例在一次提交前编码一次，
+提交后调用 `endSubmit()` 重置。传入 batch 后每次调用具有独立参数和 scratch，
+同一实例可重复编码，且不会改变原生闸状态。
 
 ### 方法
 
 | 方法 | 行为 |
 | --- | --- |
 | `scan.prepare()` / `reduce.prepare()` | 异步准备管线，编码前等待完成 |
-| `scan.encode(encoder, src, dst, count, exclusive = true)` | 将 u32 前缀和写入 GPUBuffer `dst` |
+| `scan.encode(encoder, src, dst, count, exclusive = true, batch?)` | 将 u32 前缀和写入 GPUBuffer `dst` |
 | `scan.run(src, dst, count, exclusive = true)` | 使用 Buffer 的便捷路径，内部提交 |
-| `reduce.sumInto(encoder, src, count, dst)` | 将 u32 总和写入 GPUBuffer `dst`，无需读回 |
+| `reduce.sumInto(encoder, src, count, dst, batch?)` | 将 u32 总和写入 GPUBuffer `dst`，无需读回 |
 | `reduce.sum(src, count)` | 读回后返回 JavaScript number |
-| `endSubmit()` | 调用方提交后，重置该实例的编码状态 |
+| `endSubmit()` | 调用方原生提交后，重置该实例的闸状态 |
 | `destroy()` | 释放内部缓冲和缓存的管线引用 |
 
 编码方法接收原生 GPUBuffer，`run` 和 `sum` 接收 wgpu-kit Buffer。
@@ -797,6 +936,18 @@ src.destroy();
 prefix.destroy();
 total.destroy();
 ```
+
+将上述示例中创建 encoder 至 `endSubmit()` 的部分替换为以下代码，即可使用托管批次：
+
+```ts
+const batch = await createBatch(); // 同时从 'wgpu-kit' 导入 createBatch
+scan.encode(batch.encoder, src.gpuBuffer, prefix.gpuBuffer, count, true, batch);
+reduce.sumInto(batch.encoder, prefix.gpuBuffer, count, total.gpuBuffer, batch);
+batch.submit();
+```
+
+scan 的 batch 是第六个参数；传入它时显式写 `true` 即保留默认的排他扫描。
+reduce 的 batch 是第五个参数。共享目标缓冲须在后续调用覆盖前消费。
 
 dispatch 上限遵循 WebGPU 规范,超限在入口即抛清晰 `UsageError`:
 块数 ≤ 65535(`scan`,即 count ≤ 8192 × 65535)、count ≤ 8192 × 65535

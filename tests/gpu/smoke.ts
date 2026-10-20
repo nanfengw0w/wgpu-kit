@@ -4,7 +4,7 @@
  * PingPong、rawKernel 逃生舱、CompileError 行号映射、Usage 校验。
  * 由 harness(scripts/verify.mjs)无头运行;页面契约同 spike。
  */
-import { GpuContext, Buffer, elementKernel, rawKernel, PingPong, CompileError, UsageError, defineSchema, particles, type Vec2 } from '../../src/index.ts';
+import { GpuContext, Buffer, createBatch, elementKernel, rawKernel, PingPong, CompileError, UsageError, defineSchema, particles, type Vec2 } from '../../src/index.ts';
 import { timeGpu } from '../../src/observe.ts';
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
@@ -172,6 +172,119 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     const k = elementKernel({ name: 'mismatch', state: { a: 'f32' }, inputs: { b: 'f32' }, code: 'fn userFn(idx: u32) { a[idx] = b[idx]; }' });
     try { await k.run({ a: f, b: big }); } catch (err) { e3 = (err as Error).name; }
     report('usage-validation', e1 === 'UsageError' && e2 === 'UsageError' && e3 === 'UsageError', `write-type=${e1} write-len=${e2} run-len=${e3}`);
+  }
+
+  // T6a auxInputs 不参与逐元素长度推导,arrayLength 返回实际表长;换表与热更新可重建绑定。
+  {
+    const n = 19;
+    const out = await Buffer.create('u32', n);
+    const ids = await Buffer.create('u32', n);
+    const short = await Buffer.create('u32', 3);
+    const long = await Buffer.create('u32', 37);
+    const indices = Uint32Array.from({ length: n }, (_, i) => i * 5);
+    ids.write(indices);
+    short.write(Uint32Array.from({ length: 3 }, (_, i) => i + 10));
+    long.write(Uint32Array.from({ length: 37 }, (_, i) => i + 50));
+    const code = `fn lookup(id: u32) -> u32 {
+  let size = arrayLength(&table);
+  return table[id % size] + 100u * size;
+}
+fn userFn(idx: u32) { out[idx] = lookup(ids[idx]); }`;
+    const k = elementKernel({
+      name: 'aux-table', state: { out: 'u32' }, inputs: { ids: 'u32' },
+      auxInputs: { table: 'u32' }, code,
+    });
+    await k.run({ out, ids, table: short });
+    const shortRows = (await out.read()) as Uint32Array;
+    const shortOk = shortRows.every((value, i) => value === indices[i]! % 3 + 10 + 300);
+    await k.run({ out, ids, table: long });
+    const longRows = (await out.read()) as Uint32Array;
+    const longOk = longRows.every((value, i) => value === indices[i]! % 37 + 50 + 3700);
+    report('aux-short-long-arraylength', shortOk && longOk, `短表=${shortOk} 长表=${longOk};逐元素 N=${n},表长 3/37`);
+
+    await k.replace('fn userFn(idx: u32) { out[idx] = idx + 7u; }');
+    await k.run({ out, ids, table: short });
+    const unusedOk = ((await out.read()) as Uint32Array).every((value, i) => value === i + 7);
+    await k.replace(code);
+    await k.run({ out, ids, table: long });
+    const restoredOk = ((await out.read()) as Uint32Array).every((value, i) => value === indices[i]! % 37 + 50 + 3700);
+    report('aux-hot-reload-bindings', unusedOk && restoredOk, `移除 aux 使用=${unusedOk} 恢复 aux 使用=${restoredOk}`);
+    k.destroy();
+    out.destroy(); ids.destroy(); short.destroy(); long.destroy();
+  }
+
+  // T6b 显式 count 允许不同容量,只写前缀;arrayLength 仍是完整 buffer 容量。
+  {
+    const out = await Buffer.create('u32', 137);
+    const input = await Buffer.create('u32', 211);
+    const table = await Buffer.create('u32', 3);
+    const sentinel = 123456;
+    input.write(Uint32Array.from({ length: 211 }, (_, i) => i * 2));
+    table.write(new Uint32Array([5, 7, 11]));
+    const k = elementKernel({
+      name: 'prefix-capacity', state: { out: 'u32' }, inputs: { input: 'u32' }, auxInputs: { table: 'u32' },
+      code: 'fn userFn(idx: u32) { out[idx] = input[idx] + table[idx % arrayLength(&table)] + arrayLength(&input); }',
+    });
+    const expected = (i: number) => i * 2 + [5, 7, 11][i % 3]! + 211;
+    out.write(new Uint32Array(137).fill(sentinel));
+    await k.run({ out, input, table }, undefined, { count: 70 });
+    const runRows = (await out.read()) as Uint32Array;
+    const runOk = runRows.every((value, i) => value === (i < 70 ? expected(i) : sentinel));
+
+    out.write(new Uint32Array(137).fill(sentinel));
+    const enc = ctx.device.createCommandEncoder();
+    k.encode(enc, { out, input, table }, undefined, { count: 7 });
+    ctx.device.queue.submit([enc.finish()]);
+    k.endSubmit();
+    const encodedRows = (await out.read()) as Uint32Array;
+    const encodeOk = encodedRows.every((value, i) => value === (i < 7 ? expected(i) : sentinel));
+    report('explicit-count-preserves-tail', runOk && encodeOk, `run 前70项=${runOk} encode 前7项=${encodeOk};其余保持 ${sentinel}`);
+    k.destroy();
+    out.destroy(); input.destroy(); table.destroy();
+  }
+
+  // T6c 无效参数不锁 guard;零 count 完整校验且不覆盖已编码 uniform/解除 guard。
+  {
+    const out = await Buffer.create('f32', 8);
+    const table = await Buffer.create('f32', 2);
+    const wrong = await Buffer.create('u32', 2);
+    out.write(new Float32Array(8).fill(-1));
+    table.write(new Float32Array([2, 3]));
+    const k = elementKernel({
+      name: 'count-zero-guard', state: { out: 'f32' }, auxInputs: { table: 'f32' }, uniforms: { value: 'f32' },
+      code: 'fn userFn(idx: u32, value: f32) { out[idx] = value + table[idx % arrayLength(&table)]; }',
+    });
+    await k.prepare();
+    const enc = ctx.device.createCommandEncoder();
+    let rejected = 0;
+    const attempts = [
+      () => k.encode(enc, { out, table }, { value: 7 }, { count: -1 }),
+      () => k.encode(enc, { out, table }, { value: 7 }, { count: 9 }),
+      () => k.encode(enc, { out }, { value: 7 }, { count: 0 }),
+      () => k.encode(enc, { out, table: wrong }, { value: 7 }, { count: 0 }),
+      () => k.encode(enc, { out, table }, {}, { count: 0 }),
+    ];
+    for (const attempt of attempts) {
+      try { attempt(); } catch (e) { if (e instanceof UsageError) rejected++; else throw e; }
+    }
+    k.encode(enc, { out, table }, { value: 99 }, { count: 0 });
+    k.encode(enc, { out, table }, { value: 7 }, { count: 3 });
+    k.encode(enc, { out, table }, { value: 99 }, { count: 0 });
+    await k.run({ out, table }, { value: 123 }, { count: 0 });
+    let guardKept = false;
+    try { k.encode(enc, { out, table }, { value: 100 }); } catch (e) { guardKept = e instanceof UsageError; }
+    ctx.device.queue.submit([enc.finish()]);
+    k.endSubmit();
+    const rows = (await out.read()) as Float32Array;
+    const snapshotOk = rows.every((value, i) => value === (i < 3 ? 7 + (i % 2 === 0 ? 2 : 3) : -1));
+    report('count-zero-validation-guard', rejected === attempts.length && guardKept && snapshotOk, `参数拒绝=${rejected}/${attempts.length} guard保留=${guardKept} uniform与尾部保持=${snapshotOk}`);
+
+    // 保持旧的两参 run 调用:默认处理全部逐元素资源,aux 长度不影响 count。
+    await k.run({ out, table }, { value: 11 });
+    const legacyOk = ((await out.read()) as Float32Array).every((value, i) => value === 11 + (i % 2 === 0 ? 2 : 3));
+    report('count-legacy-run-signature', legacyOk, `旧两参调用完整写入 ${out.length} 项`);
+    k.destroy();
+    out.destroy(); table.destroy(); wrong.destroy();
   }
 
   // T7 kernel 热重载:replace 后行为改变;编译失败保持旧版
@@ -452,6 +565,66 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     buf.destroy();
     a.destroy();
     b.destroy();
+  }
+
+  // 同一内核在一个 batch 中重复编码20轮,每轮 uniform 与 PingPong 方向独立。
+  {
+    const n = 257;
+    const pp = await PingPong.create({ values: 'u32' }, n);
+    pp.current.values.write(Uint32Array.from({ length: n }, (_, i) => i));
+    const k = elementKernel({
+      name: 'batch-pingpong', state: { out: 'u32' }, inputs: { source: 'u32' }, uniforms: { delta: 'u32' },
+      code: 'fn userFn(idx: u32, delta: u32) { out[idx] = source[idx] + delta; }',
+    });
+    await k.prepare();
+    const batch = await createBatch();
+    let increment = 0;
+    for (let step = 1; step <= 20; step++) {
+      k.encode(batch.encoder, { out: pp.other.values, source: pp.current.values }, { delta: step }, { batch });
+      pp.swap();
+      increment += step;
+    }
+    batch.submit();
+    const got = (await pp.current.values.read()) as Uint32Array;
+    const bad = got.findIndex((value, i) => value !== i + increment);
+    report('batch-20-pingpong-snapshots', bad === -1, bad === -1 ? `20轮单次提交,每项增加 ${increment}` : `第${bad}项 got=${got[bad]} want=${bad + increment}`);
+    k.destroy();
+    pp.destroy();
+  }
+
+  // batch 不改变旧 encoder 的 guard;cancel 丢弃编码,也不覆盖旧参数快照。
+  {
+    const legacyOut = await Buffer.create('u32', 8);
+    const batchOut = await Buffer.create('u32', 8);
+    const k = elementKernel({
+      name: 'batch-legacy-guard', state: { out: 'u32' }, uniforms: { value: 'u32' },
+      code: 'fn userFn(idx: u32, value: u32) { out[idx] = value; }',
+    });
+    await k.prepare();
+    const legacyEncoder = ctx.device.createCommandEncoder();
+    k.encode(legacyEncoder, { out: legacyOut }, { value: 7 });
+    const submitted = await createBatch();
+    k.encode(submitted.encoder, { out: batchOut }, { value: 11 }, { batch: submitted });
+    submitted.submit();
+    let keptAfterSubmit = false;
+    try { k.encode(legacyEncoder, { out: legacyOut }, { value: 99 }); } catch (e) { keptAfterSubmit = e instanceof UsageError; }
+    const cancelled = await createBatch();
+    k.encode(cancelled.encoder, { out: batchOut }, { value: 123 }, { batch: cancelled });
+    cancelled.cancel();
+    let keptAfterCancel = false;
+    try { k.encode(legacyEncoder, { out: legacyOut }, { value: 99 }); } catch (e) { keptAfterCancel = e instanceof UsageError; }
+    ctx.device.queue.submit([legacyEncoder.finish()]);
+    k.endSubmit();
+    const legacyRows = (await legacyOut.read()) as Uint32Array;
+    const batchRows = (await batchOut.read()) as Uint32Array;
+    const legacySnapshot = legacyRows.every((value) => value === 7);
+    const cancelledUnchanged = batchRows.every((value) => value === 11);
+    report('batch-keeps-legacy-guard', keptAfterSubmit && keptAfterCancel && legacySnapshot,
+      `submit后guard=${keptAfterSubmit} cancel后guard=${keptAfterCancel} 旧快照=${legacySnapshot}`);
+    report('batch-cancel-discards-commands', cancelledUnchanged, `已提交值11保持=${cancelledUnchanged},取消值123未执行`);
+    k.destroy();
+    legacyOut.destroy();
+    batchOut.destroy();
   }
 
   // T14 timeGpu 三段提交修复:必须测得非零 GPU 时间(旧实现双时间戳背靠背,Δ≈0)

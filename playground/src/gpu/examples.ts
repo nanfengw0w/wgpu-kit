@@ -1,4 +1,4 @@
-import { GpuContext, Buffer, elementKernel, PingPong, createScan, createReduce } from 'wgpu-kit';
+import { GpuContext, Buffer, elementKernel, PingPong, createBatch, createScan, createReduce, type ComputeBatch } from 'wgpu-kit';
 export type DemoController={destroy():void;setPaused(v:boolean):void;reset():void;setParameter?(key:string,value:number):void};
 export const DEMOS=[
  {id:'wave-field',title:'Wave interference',description:'Three sources. One field. Interference patterns computed for every pixel.',tags:['elementKernel','field','interaction'],hint:'Move across the canvas to steer the third wave source.'},
@@ -73,7 +73,7 @@ fn userFn(idx: u32, size: u32, mode: u32, split: f32, strength: f32) {
 }`;
 export const DEMO_SOURCES:Record<string,string>={
  'wave-field':`import { Buffer, elementKernel } from 'wgpu-kit';\n\nconst color = await Buffer.create('vec4f', size * size);\nconst waves = elementKernel({\n  state: { color: 'vec4f' },\n  uniforms: { size: 'u32', time: 'f32', pointer: 'vec2f', gain: 'f32' },\n  code: \`${waveCode}\`,\n});\nawait waves.run({ color }, { size, time, pointer: { x: 0, y: 0 }, gain: 1.0 });`,
- 'reaction-diffusion':`import { PingPong, elementKernel } from 'wgpu-kit';\n\nconst state = await PingPong.create({ chem: 'vec2f' }, size * size);\nconst step = elementKernel({\n  state: { chemicals: 'vec2f' },\n  inputs: { previous: 'vec2f' },\n  uniforms: { size: 'u32', feed: 'f32', kill: 'f32', pointer: 'vec2f', press: 'f32' },\n  code: \`${reactionCode}\`,\n});\nawait step.run({ chemicals: state.other.chem, previous: state.current.chem },\n  { size, feed: 0.0367, kill: 0.0649, pointer: { x: 0.5, y: 0.5 }, press: 0 });\nstate.swap();`,
+ 'reaction-diffusion':`import { Buffer, PingPong, createBatch, elementKernel } from 'wgpu-kit';\n\nconst state = await PingPong.create({ chem: 'vec2f' }, size * size);\nconst color = await Buffer.create('vec4f', size * size);\nconst step = elementKernel({\n  state: { chemicals: 'vec2f' },\n  inputs: { previous: 'vec2f' },\n  uniforms: { size: 'u32', feed: 'f32', kill: 'f32', pointer: 'vec2f', press: 'f32' },\n  code: \`${reactionCode}\`,\n});\nconst colorize = elementKernel({\n  state: { color: 'vec4f' }, inputs: { chemical: 'vec2f' },\n  code: \`${reactionColor}\`,\n});\nawait Promise.all([step.prepare(), colorize.prepare()]);\nconst batch = await createBatch();\nconst before = state.current.chem;\ntry {\n  for (let i = 0; i < 3; i++) {\n    step.encode(batch.encoder, { chemicals: state.other.chem, previous: state.current.chem },\n      { size, feed: 0.0367, kill: 0.0649, pointer: { x: 0.5, y: 0.5 }, press: 0 }, { batch });\n    state.swap();\n  }\n  colorize.encode(batch.encoder, { color, chemical: state.current.chem }, undefined, { batch });\n  // Append native rendering from color.gpuBuffer to batch.encoder.\n  batch.submit();\n} catch (error) {\n  if (batch.status !== 'submitted') {\n    if (batch.status === 'open') batch.cancel();\n    if (state.current.chem !== before) state.swap();\n  }\n  throw error;\n}`,
  'image-convolution':`import { Buffer, elementKernel } from 'wgpu-kit';\n\nconst original = await Buffer.create('vec4f', size * size);\nconst color = await Buffer.create('vec4f', size * size);\noriginal.write(imagePixels);\nconst filter = elementKernel({\n  state: { color: 'vec4f' },\n  inputs: { original: 'vec4f' },\n  uniforms: { size: 'u32', mode: 'u32', split: 'f32', strength: 'f32' },\n  code: \`${convolutionCode}\`,\n});\nawait filter.run({ color, original }, { size, mode: 1, split: 0.5, strength: 1 });`,
  'prefix-sum':`import { Buffer, createScan, createReduce } from 'wgpu-kit';\n\nconst data = new Uint32Array([3, 1, 4, 1, 5, 9, 2, 6]);\nconst input = await Buffer.create('u32', data.length);\nconst output = await Buffer.create('u32', data.length);\ninput.write(data);\nconst scan = createScan();\nawait scan.run(input, output, data.length, true);\nconst prefix = await output.read();\nconst reduce = createReduce();\nconst sum = await reduce.sum(input, data.length);\n// prefix: [0, 3, 4, 8, 9, 14, 23, 25]; sum: 31\nscan.destroy(); reduce.destroy(); input.destroy(); output.destroy();`
 };
@@ -89,25 +89,47 @@ export async function mountExample(id:string,canvas:HTMLCanvasElement,onStatus:(
  const shader=device.createShaderModule({code:viewShader,label:'wgpu-kit-example-view'});
  const pipeline=await device.createRenderPipelineAsync({layout:'auto',vertex:{module:shader,entryPoint:'vs'},fragment:{module:shader,entryPoint:'fs',targets:[{format}]},primitive:{topology:'triangle-list'}});
  const group=device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:output.gpuBuffer}},{binding:1,resource:{buffer:screen}}]});
- let paused=false,dead=false,frame=0,t=0,last=0,pointer={x:0,y:0},press=0,visible=true;const params={feed:.035,kill:.062,gain:1,mode:1,strength:1,split:.5,theme:options.theme==='light'?1:0};
- let ping:Awaited<ReturnType<typeof PingPong.create<'chem'>>>|null=null,input:Buffer|null=null;let kernel:ReturnType<typeof elementKernel>,colorize:ReturnType<typeof elementKernel>|null=null;
+ let paused=false,dead=false,frame=0,drawing=false,t=0,last=0,pointer={x:0,y:0},press=0,visible=true;const params={feed:.035,kill:.062,gain:1,mode:1,strength:1,split:.5,theme:options.theme==='light'?1:0};
+ let ping:PingPong<'chem'>|null=null,input:Buffer|null=null;let kernel:ReturnType<typeof elementKernel>,colorize:ReturnType<typeof elementKernel>|null=null;
  const initialize=()=>{if(ping){const data=new Float32Array(size*size*2);for(let y=0;y<size;y++)for(let x=0;x<size;x++){const i=(y*size+x)*2;const seed=Math.abs((Math.sin(x*15.13+y*37.2)*43758.5453)%1);let active=false;for(let n=0;n<30;n++){const sx=size*(.1+(((n*37+17)%97)/97)*.8),sy=size*(.1+(((n*61+31)%89)/89)*.8);if(Math.hypot(x-sx,y-sy)<5+(n%3)){active=true;break;}}data[i]=active?.5:1;data[i+1]=active?.28+seed*.1:0;}ping.current.chem.write(data);ping.other.chem.write(data);}};
  if(id==='wave-field'){kernel=elementKernel({name:'wave-interference',state:{color:'vec4f'},uniforms:{size:'u32',time:'f32',pointer:'vec2f',gain:'f32'},code:waveCode});}
  else if(id==='reaction-diffusion'){ping=await PingPong.create({chem:'vec2f'},size*size);initialize();pointer={x:.5,y:.5};kernel=elementKernel({name:'gray-scott',state:{chemicals:'vec2f'},inputs:{previous:'vec2f'},uniforms:{size:'u32',feed:'f32',kill:'f32',pointer:'vec2f',press:'f32'},code:reactionCode});colorize=elementKernel({name:'chemical-color',state:{color:'vec4f'},inputs:{chemical:'vec2f'},code:reactionColor});await colorize.prepare();}
  else{input=await Buffer.create('vec4f',size*size);const values=new Float32Array(size*size*4);for(let y=0;y<size;y++)for(let x=0;x<size;x++){const u=x/size,v=y/size,i=(y*size+x)*4;const circle=Math.hypot(u-.57,v-.49)<.285;const stripe=(Math.floor(u*24)+Math.floor(v*24))%2;const ring=Math.sin(Math.hypot(u-.57,v-.49)*130)*.04;values[i]=circle?.95:u*.44+.025;values[i+1]=circle?.18+v*.45:.08+v*.45+stripe*.12;values[i+2]=circle?.14+ring:.35+u*.28+stripe*.16;values[i+3]=1;if(Math.abs(v-.77)<.055&&u>.12&&u<.82){values[i]=.86;values[i+1]=.93;values[i+2]=.54;}}input.write(values);kernel=elementKernel({name:'image-convolution',state:{color:'vec4f'},inputs:{original:'vec4f'},uniforms:{size:'u32',mode:'u32',split:'f32',strength:'f32'},code:convolutionCode});}
  await kernel.prepare();
  const resize=()=>{const r=canvas.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,1.5);const w=Math.max(1,Math.floor(r.width*d)),h=Math.max(1,Math.floor(r.height*d));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}const data=new ArrayBuffer(16);new Uint32Array(data)[0]=size;const f=new Float32Array(data);f[1]=w;f[2]=h;f[3]=params.theme;device.queue.writeBuffer(screen,0,data);};
- const draw=(now:number)=>{if(dead)return;frame=requestAnimationFrame(draw);if(!visible||document.hidden||(paused&&last!==0))return;last=now;resize();t+=1/60;try{
-  if(ping){for(let i=0;i<3;i++){const encoder=device.createCommandEncoder();kernel.encode(encoder,{chemicals:ping.other.chem,previous:ping.current.chem},{size,feed:params.feed,kill:params.kill,pointer,press});device.queue.submit([encoder.finish()]);kernel.endSubmit();ping.swap();}}
-  const encoder=device.createCommandEncoder();if(id==='wave-field')kernel.encode(encoder,{color:output},{size,time:t,pointer,gain:params.gain});else if(ping)colorize!.encode(encoder,{color:output,chemical:ping.current.chem});else kernel.encode(encoder,{color:output,original:input!},{size,mode:params.mode,split:params.split,strength:params.strength});
-  const pass=encoder.beginRenderPass({colorAttachments:[{view:surface.getCurrentTexture().createView(),clearValue:{r:0,g:0,b:0,a:1},loadOp:'clear',storeOp:'store'}]});pass.setPipeline(pipeline);pass.setBindGroup(0,group);pass.draw(3);pass.end();device.queue.submit([encoder.finish()]);kernel.endSubmit();colorize?.endSubmit();
- }catch(e){paused=true;onStatus('GPU error: '+(e instanceof Error?e.message:String(e)));}};
+ const request=()=>{if(!dead&&!frame&&!drawing)frame=requestAnimationFrame(draw);};
+ async function draw(now:number){
+   frame=0;if(dead)return;if(!visible||document.hidden||paused&&last!==0){request();return;}
+   drawing=true;last=now;let batch:ComputeBatch|undefined,swaps=0;
+   try{
+     batch=await createBatch();
+     if(dead||!visible||document.hidden){batch.cancel();return;}
+     resize();t+=1/60;const encoder=batch.encoder;
+     if(ping){
+       for(let i=0;i<3;i++){
+         kernel.encode(encoder,{chemicals:ping.other.chem,previous:ping.current.chem},{size,feed:params.feed,kill:params.kill,pointer,press},{batch});
+         ping.swap();swaps++;
+       }
+     }
+     if(id==='wave-field')kernel.encode(encoder,{color:output},{size,time:t,pointer,gain:params.gain},{batch});
+     else if(ping)colorize!.encode(encoder,{color:output,chemical:ping.current.chem},undefined,{batch});
+     else kernel.encode(encoder,{color:output,original:input!},{size,mode:params.mode,split:params.split,strength:params.strength},{batch});
+     const pass=encoder.beginRenderPass({colorAttachments:[{view:surface!.getCurrentTexture().createView(),clearValue:{r:0,g:0,b:0,a:1},loadOp:'clear',storeOp:'store'}]});
+     pass.setPipeline(pipeline);pass.setBindGroup(0,group);pass.draw(3);pass.end();batch.submit();
+   }catch(e){
+     if(batch&&batch.status!=='submitted'){
+       if(batch.status==='open')batch.cancel();
+       if(swaps%2)ping!.swap();
+     }
+     if(!dead){paused=true;onStatus('GPU error: '+(e instanceof Error?e.message:String(e)));}
+   }finally{drawing=false;request();}
+ }
  const point=(e:PointerEvent)=>{const r=canvas.getBoundingClientRect();const x=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y=Math.max(0,Math.min(1,(e.clientY-r.top)/r.height));pointer=id==='wave-field'?{x:(x-.5)*2,y:(y-.5)*2}:{x,y};params.split=x;if(paused)last=0;};
  const down=(e:PointerEvent)=>{press=1;point(e);canvas.setPointerCapture(e.pointerId);};const up=()=>{press=0;};
  canvas.addEventListener('pointermove',point);canvas.addEventListener('pointerdown',down);canvas.addEventListener('pointerup',up);canvas.addEventListener('pointercancel',up);canvas.style.touchAction='none';const observer=new IntersectionObserver(es=>{visible=es[0].isIntersecting;});observer.observe(canvas);
  // A paused preview still needs a fresh backing buffer after its layout changes.
  const resizeObserver=new ResizeObserver(()=>{last=0;});resizeObserver.observe(canvas);
- const onError=(event:GPUUncapturedErrorEvent)=>{paused=true;onStatus('GPU error: '+event.error.message);};device.addEventListener('uncapturederror',onError);ctx.lost.then(()=>{if(!dead){paused=true;onStatus('GPU device lost. Reload to reconnect.');}});resize();frame=requestAnimationFrame(draw);onStatus('Live WebGPU · wgpu-kit 2.0.1');
+ const onError=(event:GPUUncapturedErrorEvent)=>{paused=true;onStatus('GPU error: '+event.error.message);};device.addEventListener('uncapturederror',onError);ctx.lost.then(()=>{if(!dead){paused=true;onStatus('GPU device lost. Reload to reconnect.');}});resize();request();onStatus('Live WebGPU · wgpu-kit 2.1.0');
  return{destroy(){dead=true;cancelAnimationFrame(frame);observer.disconnect();resizeObserver.disconnect();canvas.removeEventListener('pointermove',point);canvas.removeEventListener('pointerdown',down);canvas.removeEventListener('pointerup',up);canvas.removeEventListener('pointercancel',up);device.removeEventListener('uncapturederror',onError);kernel.destroy();colorize?.destroy();ping?.destroy();input?.destroy();output.destroy();screen.destroy();surface.unconfigure();},setPaused(v){paused=v;if(!v)last=0;},reset(){t=0;initialize();last=0;},setParameter(key,value){if(key in params)(params as any)[key]=value;last=0;}};
 }
 

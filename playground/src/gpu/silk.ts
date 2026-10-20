@@ -450,7 +450,7 @@ export async function mountSilk(
     if(!paused)requestDraw();
   };
   ready=true;requestDraw();
-  onStatus("Live WebGPU · wgpu-kit 2.0.1");
+  onStatus("Live WebGPU · wgpu-kit 2.1.0");
   return {
     destroy() {
       if(dead)return;

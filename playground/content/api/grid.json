@@ -1,6 +1,7 @@
 {
-  "version": "2.0.0",
-  "verifiedAgainst": "Installed npm package declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989",
+  "version": "2.1.0",
+  "auditBaseline": "2.0.0",
+  "verifiedAgainst": "Historical audit baseline: published npm 2.0.0 declarations and JavaScript implementation; repository source SHA 306a7a7233c9de8b433d179ed1164482143a4989. Batch parameter and lifecycle additions were released in 2.1.0 and are documented from the corresponding src files; the whole API has not been re-audited.",
   "entrypoints": [
     {
       "path": "wgpu-kit/grid",
@@ -54,6 +55,10 @@
             {
               "en": "Do not assume a 3×3 neighborhood covers your radius: ceil-based subdivision can make cells smaller than cellSize. Compute the search radius in cells from actual width.",
               "zh": "不要直接假设 3×3 邻域覆盖交互半径：ceil 分格可能使实际格宽小于 cellSize，应根据实际格宽计算搜索格数。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
             }
           ],
           "examples": [
@@ -65,7 +70,8 @@
                 "zh": "在调用方的 command encoder 内建格，并读回索引。"
               }
             }
-          ]
+          ],
+          "source": "src/packs/grid/index.ts"
         },
         {
           "name": "NeighborGridConfig",
@@ -227,7 +233,7 @@
             {
               "name": "encode",
               "kind": "method",
-              "signature": "encode(encoder: GPUCommandEncoder, pos: Buffer): void",
+              "signature": "encode(encoder: GPUCommandEncoder, pos: Buffer, batch?: ComputeBatch): void",
               "description": {
                 "en": "Append counts → scan → post → scatter passes to the caller encoder.",
                 "zh": "向调用者 encoder 追加 counts → scan → post → scatter pass。"
@@ -252,6 +258,15 @@
                     "en": "Caller-owned vec2f storage buffer with count positions on the same device. No dedicated kind/length validation is performed here.",
                     "zh": "调用者拥有、同一设备上的 vec2f storage 缓冲，含 count 个位置。此处没有专门的 kind/length 校验。"
                   }
+                },
+                {
+                  "name": "batch",
+                  "type": "ComputeBatch",
+                  "required": false,
+                  "description": {
+                    "en": "Optional managed scope from wgpu-kit. Encoder must equal batch.encoder; call batch.submit() rather than submitting it yourself.",
+                    "zh": "可选托管作用域，从 wgpu-kit 导入；encoder 须为 batch.encoder，并通过 batch.submit() 提交。"
+                  }
                 }
               ],
               "returns": {
@@ -263,18 +278,36 @@
               },
               "constraints": [
                 {
-                  "en": "One encode per grid instance per submission: submit, then call endSubmit(). Downstream passes in the same encoder can consume the resulting index without CPU readback.",
-                  "zh": "每次提交前同一网格实例只能 encode 一次：提交后调用 endSubmit()。同一 encoder 的后续 pass 可直接消费索引，无需 CPU 读回。"
+                  "en": "Without batch, one encode per grid instance per submission, followed by endSubmit(). With batch, repeated builds use independent internal parameters/scratch and need no endSubmit(); the native guard is unchanged.",
+                  "zh": "省略 batch 时每个网格实例每次提交只能 encode 一次，提交后调用 endSubmit()。传入 batch 后内部参数／scratch 独立，可重复建格且无需 endSubmit()，原生闸不变。"
                 },
                 {
-                  "en": "The internal scan guard can throw after the initial counts pass has already been recorded on an invalid repeated call. Discard that encoder rather than submitting a partial failed build.",
-                  "zh": "重复调用违规时，内部 scan 防护可能在 counts pass 已写入后才抛错。应丢弃该 encoder，避免提交失败的部分建格。"
+                  "en": "cellStart, cellFill and order are shared public output buffers. Consume them in downstream passes before another build overwrites them. Managed scratch isolation does not preserve old grid outputs.",
+                  "zh": "cellStart、cellFill、order 是共享公开输出缓冲。必须在下一次建格覆盖前通过后续 pass 消费；托管 scratch 独立不会保留旧网格输出。"
+                },
+                {
+                  "en": "On a failed native repeated call, the counts pass may already be encoded before the internal scan guard rejects it. Discard that native encoder. Batch lifecycle is validated before grid work is recorded.",
+                  "zh": "原生路径违规重复调用失败时，内部 scan 闸拒绝前可能已写入 counts pass，应丢弃该原生 encoder。批次生命周期会在写入网格任务前校验。"
+                },
+                {
+                  "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+                  "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
                 }
               ],
               "errors": [
                 {
-                  "en": "Propagates scan UsageError for repeated encoding and WebGPU validation/device errors for incompatible resources or encoder state.",
-                  "zh": "重复编码时传播 scan 的 UsageError；资源或 encoder 状态不兼容时产生 WebGPU 校验/设备错误。"
+                  "en": "Propagates UsageError for repeated native encoding, closed/mismatched batches, and WebGPU validation/device errors for incompatible resources or encoder state. Buffer device ownership is a caller precondition.",
+                  "zh": "重复原生编码、批次关闭／不匹配时传播 UsageError；资源或 encoder 状态不兼容时产生 WebGPU 校验／设备错误。缓冲设备归属是调用方前提。"
+                }
+              ],
+              "examples": [
+                {
+                  "language": "typescript",
+                  "caption": {
+                    "en": "Managed grid build",
+                    "zh": "托管建格"
+                  },
+                  "code": "import { Buffer, createBatch } from 'wgpu-kit';\nimport { createNeighborGrid } from 'wgpu-kit/grid';\nconst pos = await Buffer.create('vec2f', 2);\npos.write(new Float32Array([-0.2, 0, 0.2, 0]));\nconst grid = await createNeighborGrid({ count: 2, worldHalf: 1, cellSize: 0.25 });\nawait grid.prepare();\nconst batch = await createBatch();\ngrid.encode(batch.encoder, pos, batch);\n// Append a consumer of cellStart/cellFill/order before another build.\nbatch.submit();\nconsole.log(await grid.order.read());\ngrid.destroy(); pos.destroy();"
                 }
               ]
             },
@@ -283,8 +316,8 @@
               "kind": "method",
               "signature": "endSubmit(): void",
               "description": {
-                "en": "Reset the internal scan encode-once guard after an actual queue submission.",
-                "zh": "实际队列提交后重置内部 scan 的单次编码防护。"
+                "en": "Reset the internal scan native encode-once guard after a caller-owned submission. Managed batch encoding neither needs nor changes this guard.",
+                "zh": "调用方原生提交后重置内部 scan 的 encode-once 闸；托管批次不需要或改变此闸。"
               },
               "parameters": [],
               "returns": {
@@ -357,6 +390,17 @@
                   "zh": "不销毁调用者的位置缓冲。销毁前停止 encode/update；销毁后不要使用网格缓冲。"
                 }
               ]
+            }
+          ],
+          "source": "src/packs/grid/index.ts",
+          "constraints": [
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            },
+            {
+              "en": "cellStart, cellFill and order are shared public output buffers. Consume them in downstream passes before another build overwrites them. Managed scratch isolation does not preserve old grid outputs.",
+              "zh": "cellStart、cellFill、order 是共享公开输出缓冲。必须在下一次建格覆盖前通过后续 pass 消费；托管 scratch 独立不会保留旧网格输出。"
             }
           ]
         }

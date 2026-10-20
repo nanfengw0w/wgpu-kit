@@ -1,43 +1,47 @@
 import { Buffer } from './buffer.ts';
 import { type ScalarKind } from './layout.ts';
 
-/**
- * 双缓冲:模拟类 kernel 的绝对刚需(spike 中是 45 行仪式)。
- * A/B 两组同构缓冲,读"当前侧"、写"另一侧",swap 一次完成帧间翻转。
- * 泛型 K 保留字段名的字面量类型,Record 访问不会被 noUncheckedIndexedAccess 弄成 undefined。
- */
-export class PingPong<K extends string> {
-  #sides: [Record<K, Buffer>, Record<K, Buffer>];
+type Side<K extends string, F extends Record<K, ScalarKind>> = { [P in K]: Buffer<F[P]> };
+type CreateResult<F extends string | Record<string, ScalarKind>> = Exclude<F, string> extends infer Fields extends Record<string, ScalarKind>
+  ? keyof Fields extends string ? PingPong<keyof Fields, Fields> : PingPong<string>
+  : never;
+
+/** Two buffer sides: read current, write other, then swap. Field names and kinds are preserved. */
+export class PingPong<K extends string, F extends Record<K, ScalarKind> = Record<K, ScalarKind>> {
+  #sides: [Side<K, F>, Side<K, F>];
   #names: readonly K[];
   #length: number;
-  #kinds: Record<K, ScalarKind>;
+  #kinds: F;
   #index = 0;
 
-  private constructor(names: readonly K[], kinds: Record<K, ScalarKind>, length: number, a: Record<K, Buffer>, b: Record<K, Buffer>) {
+  private constructor(names: readonly K[], kinds: F, length: number, a: Side<K, F>, b: Side<K, F>) {
     this.#names = names;
     this.#kinds = kinds;
     this.#length = length;
     this.#sides = [a, b];
   }
 
-  static async create<K extends string>(kinds: Record<K, ScalarKind>, length: number): Promise<PingPong<K>> {
+  static create<const F extends string | Record<string, ScalarKind>>(kinds: Exclude<F, string>, length: number): Promise<CreateResult<F>>;
+  static create<K extends string>(kinds: Record<K, ScalarKind>, length: number): Promise<PingPong<K>>;
+  static async create(kinds: Record<string, ScalarKind>, length: number): Promise<PingPong<string>> {
+    type K = string;
     const names = Object.keys(kinds) as K[];
     if (names.length === 0) throw new Error('PingPong requires at least one field');
     const make = async (): Promise<Record<K, Buffer>> => {
       const side = {} as Record<K, Buffer>;
-      for (const name of names) side[name] = await Buffer.create(kinds[name], length);
+      for (const name of names) side[name] = await Buffer.create(kinds[name]!, length);
       return side;
     };
     return new PingPong<K>(names, kinds, length, await make(), await make());
   }
 
   /** 当前帧的数据侧(渲染/读回用) */
-  get current(): Record<K, Buffer> {
+  get current(): Side<K, F> {
     return this.#sides[this.#index]!;
   }
 
   /** 另一侧(kernel 写入目标) */
-  get other(): Record<K, Buffer> {
+  get other(): Side<K, F> {
     return this.#sides[1 - this.#index]!;
   }
 
@@ -47,7 +51,7 @@ export class PingPong<K extends string> {
   }
 
   /** 以 (写侧, 读侧) 调用 fn 后自动 swap 的语法糖 */
-  async runWith(fn: (write: Record<K, Buffer>, read: Record<K, Buffer>) => Promise<void>): Promise<void> {
+  async runWith(fn: (write: Side<K, F>, read: Side<K, F>) => Promise<void>): Promise<void> {
     await fn(this.other, this.current);
     this.swap();
   }
@@ -57,8 +61,9 @@ export class PingPong<K extends string> {
   }
 
   /** 克隆一份同构 PingPong(同字段同长度) */
-  async clone(): Promise<PingPong<K>> {
-    return PingPong.create(this.#kinds, this.#length);
+  async clone(): Promise<PingPong<K, F>> {
+    // The saved declaration keeps field kinds unchanged.
+    return PingPong.create<Record<string, ScalarKind>>(this.#kinds, this.#length) as unknown as Promise<PingPong<K, F>>;
   }
 
   get names(): readonly K[] {

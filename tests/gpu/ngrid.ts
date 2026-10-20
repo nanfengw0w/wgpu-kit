@@ -10,7 +10,7 @@
  *   ④ 重复 update 一致性
  *   ⑤ encode 合同:grid.encode 写入调用方 encoder 与 update 结果一致
  */
-import { Buffer, GpuContext } from "../../src/index.ts";
+import { Buffer, GpuContext, createBatch, createReduce, elementKernel } from '../../src/index.ts';
 import { createNeighborGrid } from '../../src/packs/grid/index.ts';
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
@@ -148,6 +148,65 @@ async function main() {
     report('ngrid encode 合同', same, same ? 'encode 与 update 结果位一致 ✓' : 'encode 路径结果不同');
     posBuf.destroy();
     grid.destroy();
+  }
+
+  // ⑥ 同一 grid/reduce/kernel 在一个 batch 中循环建格、归约、查辅助表并累计结果。
+  {
+    const n = 257;
+    const positions = new Float32Array(n * 2);
+    const cellIds = new Uint32Array(n);
+    const counts = new Uint32Array(16);
+    for (let i = 0; i < n; i++) {
+      const cell = (i * 5) % 16;
+      cellIds[i] = cell;
+      counts[cell]!++;
+      positions[i * 2] = -1 + ((cell % 4) + 0.5) * 0.5;
+      positions[i * 2 + 1] = -1 + (Math.floor(cell / 4) + 0.5) * 0.5;
+    }
+    const grid = await createNeighborGrid({ count: n, worldHalf: 1, cellSize: 0.5 });
+    const posBuf = await Buffer.create('vec2f', n);
+    const out = await Buffer.create('u32', n);
+    const total = await Buffer.create('u32', 1);
+    const reduce = createReduce();
+    const query = elementKernel({
+      name: 'ngrid-aux-query',
+      state: { occupancy: 'u32' },
+      inputs: { positions: 'vec2f' },
+      auxInputs: { starts: 'u32', ends: 'u32', entityOrder: 'u32', total: 'u32' },
+      uniforms: { round: 'u32' },
+      code: `fn userFn(idx: u32, round: u32) {
+        let entity = entityOrder[idx];
+        let xy = vec2u(clamp(floor((positions[entity] + vec2f(1.0)) * 2.0), vec2f(0.0), vec2f(3.0)));
+        let cell = xy.y * 4u + xy.x;
+        occupancy[entity] = occupancy[entity] + ends[cell] - starts[cell] + total[0] + round;
+      }`,
+    });
+    try {
+      posBuf.write(positions);
+      out.write(new Uint32Array(n));
+      await Promise.all([grid.prepare(), reduce.prepare(), query.prepare()]);
+      const batch = await createBatch();
+      const rounds = 4;
+      for (let round = 1; round <= rounds; round++) {
+        grid.encode(batch.encoder, posBuf, batch);
+        reduce.sumInto(batch.encoder, grid.order.gpuBuffer, n, total.gpuBuffer, batch);
+        query.encode(batch.encoder, { occupancy: out, positions: posBuf, starts: grid.cellStart, ends: grid.cellFill, entityOrder: grid.order, total }, { round }, { count: n, batch });
+      }
+      batch.submit();
+      const got = (await out.read()) as Uint32Array;
+      const expectedTotal = n * (n - 1) / 2;
+      const roundSum = rounds * (rounds + 1) / 2;
+      const bad = got.findIndex((v, i) => v !== rounds * (counts[cellIds[i]!]! + expectedTotal) + roundSum);
+      report('ngrid + reduce + auxInputs 多轮 batch', bad === -1,
+        bad === -1 ? `${rounds}轮单次提交,N=${n},cells=16,total[1]: 全部与 CPU 一致` : `entity ${bad}: got ${got[bad]}`);
+    } finally {
+      query.destroy();
+      reduce.destroy();
+      posBuf.destroy();
+      out.destroy();
+      total.destroy();
+      grid.destroy();
+    }
   }
 }
 

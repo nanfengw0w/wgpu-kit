@@ -1,8 +1,9 @@
 <section id="getting-started">
 <h2>Getting started</h2>
 <p>wgpu-kit is a TypeScript toolkit for browser GPU computation. Use the core APIs to allocate storage, write a per-element WGSL function, and compose compute work with your own WebGPU renderer.</p>
+<p>Version 2.1.0 releases auxiliary inputs, dispatch counts, managed batches and typed kernels. The imported API audit retains npm 2.0.0 as its historical baseline; the additions are documented from their source files.</p>
 <p>Install the published package in your application:</p>
-<pre><code>npm install wgpu-kit@2.0.1</code></pre>
+<pre><code>npm install wgpu-kit@2.1.0</code></pre>
 <p>Run this in a browser module served over HTTPS or localhost. The first allocation requests a GPU device. This complete example scales four values and reads the result back:</p>
 <pre><code>import { Buffer, elementKernel } from 'wgpu-kit';
 
@@ -28,7 +29,7 @@ values.destroy();</code></pre>
 <section id="kernels">
 <h2>Element kernels</h2>
 <p><code>elementKernel(spec)</code> wraps a per-element WGSL function. The function must be named <code>userFn</code>; its first argument is the element index. The library generates bindings, uniform layout, the compute entry point, and bounds-checked dispatch.</p>
-<ul><li><code>state</code> declares read/write storage arrays</li><li><code>inputs</code> declares read-only storage arrays</li><li><code>uniforms</code> declares the values passed to each invocation</li><li><code>code</code> contains your WGSL, including helper functions</li></ul>
+<ul><li><code>state</code> declares read/write storage arrays</li><li><code>inputs</code> declares read-only storage arrays</li><li><code>auxInputs</code> declares read-only auxiliary arrays with independent lengths</li><li><code>uniforms</code> declares the values passed to each invocation</li><li><code>code</code> contains your WGSL, including helper functions</li></ul>
 <pre><code>const integrate = elementKernel({
   state: { position: 'vec2f' },
   inputs: { velocity: 'vec2f' },
@@ -39,7 +40,34 @@ values.destroy();</code></pre>
 });
 
 await integrate.run({ position, velocity }, { dt: 0.016 });</code></pre>
-<p>Resource keys and types must match the declaration. All resources supplied to a single element kernel must have the same element count. Pass vector uniforms as objects such as <code>{ x: 0.5, y: 0.5 }</code>.</p>
+<p>Resource keys and types must match the declaration. Pass vector uniforms as objects such as <code>{ x: 0.5, y: 0.5 }</code>.</p>
+<p>By default, state and inputs must have the same length; the first determines the invocation count. Auxiliary inputs may have independent lengths and never determine that count. At least one state or inputs field is required.</p>
+<p>Pass options as the third run argument or fourth encode argument. An explicit count must be an integer in 0..0xffffffff; each state/input buffer must have at least that capacity, and their lengths may differ. In both modes, the dispatch must fit the device's workgroup-count limit.</p>
+<pre><code>import { Buffer, elementKernel } from 'wgpu-kit';
+import type { ElementKernelDispatchOptions } from 'wgpu-kit';
+
+const output = await Buffer.create('f32', 6);
+const source = await Buffer.create('f32', 4);
+const weights = await Buffer.create('f32', 3);
+source.write(new Float32Array([1, 2, 3, 4]));
+weights.write(new Float32Array([10, 20, 30]));
+
+const scale = elementKernel({
+  state: { output: 'f32' },
+  inputs: { source: 'f32' },
+  auxInputs: { weights: 'f32' },
+  code: `fn userFn(i: u32) {
+    output[i] = source[i] * weights[i % arrayLength(&amp;weights)];
+  }`,
+});
+const options: ElementKernelDispatchOptions = { count: 4 };
+await scale.run({ output, source, weights }, undefined, options);
+console.log(Array.from(await output.read())); // [10, 40, 90, 40, 0, 0]
+scale.destroy();
+output.destroy(); source.destroy(); weights.destroy();</code></pre>
+<p>Every declared auxiliary input must be supplied with the matching kind, even when unused by WGSL. Bound resources must belong to the shared device. WGSL is responsible for auxiliary indexing bounds; query its length with <code>arrayLength(&amp;weights)</code>.</p>
+<p>Zero count still validates resources, uniforms and options, then performs no encoding or submission and leaves the encode-once guard unchanged.</p>
+<p>These auxiliary-input and dispatch-count options were added in 2.1.0; the original 2.0.0 audit remains a historical baseline.</p>
 <p><code>run()</code> prepares, encodes, and submits for you. For frame-level control, use <code>prepare()</code> and <code>encode()</code>. WGSL compilation diagnostics map back to your function’s lines; the schema layer does not type-check the WGSL function body.</p>
 <div class="callout"><p>For neighborhood operations, use separate read and write buffers. Writing in-place while another invocation reads a neighbor can create races. <a href="#ping-pong">PingPong</a> makes this separation explicit.</p></div>
 </section>
@@ -143,7 +171,43 @@ limit.endSubmit();
 console.log(Array.from(await output.read())); // [3, 6, 8, 8]
 scale.destroy(); limit.destroy();
 input.destroy(); intermediate.destroy(); output.destroy();</code></pre>
-<div class="callout"><p>Call <code>encode()</code> at most once per element-kernel instance before submitting. Its uniforms are shared state, so encoding that same instance twice could overwrite the first parameter set; the library rejects this. Call <code>endSubmit()</code> after your custom submission. Use separate instances or separate submissions for repeated dispatches.</p></div>
+<div class="callout"><p>On the native path without a batch, call encode() with a nonzero count at most once per element-kernel instance before submitting. Shared uniforms require the encode-once guard; call endSubmit() after your custom submission. Use a managed batch for repeated dispatches with independent parameters.</p></div>
+<h3>Managed batches and typed kernels</h3>
+<p>Version 2.1.0 adds createBatch() and typedElementKernel(). Prepare kernels first, then pass { batch } as the fourth encode argument with batch.encoder. run() still accepts dispatch count options only. The typed entry infers resource names, Buffer kinds and scalar/vector uniform shapes; declared uniforms are required. The original elementKernel and broad Record calls stay compatible. Types do not check WGSL bodies.</p>
+<p>This complete example encodes the same typed kernel 20 times, with different uniforms, a four-element prefix and a lookup table of independent length. Each dispatch has its own uniform snapshot; no endSubmit() is needed.</p>
+<pre><code>import { Buffer, PingPong, createBatch, typedElementKernel } from 'wgpu-kit';
+
+const state = await PingPong.create({ value: 'f32' }, 6);
+const weights = await Buffer.create('f32', 3);
+state.current.value.write(new Float32Array([1, 2, 3, 4, 0, 0]));
+weights.write(new Float32Array([1, 2, 3]));
+
+const step = typedElementKernel({
+  state: { next: 'f32' },
+  inputs: { previous: 'f32' },
+  auxInputs: { weights: 'f32' },
+  uniforms: { delta: 'f32' },
+  code: `fn userFn(i: u32, delta: f32) {
+    next[i] = previous[i] + weights[i % arrayLength(&amp;weights)] * delta;
+  }`,
+});
+await step.prepare();
+const batch = await createBatch();
+for (let iteration = 0; iteration &lt; 20; iteration++) {
+  step.encode(batch.encoder, {
+    next: state.other.value,
+    previous: state.current.value,
+    weights,
+  }, { delta: iteration + 1 }, { count: 4, batch });
+  state.swap();
+}
+batch.submit();
+console.log(Array.from(await state.current.value.read()));
+// [211, 422, 633, 214, 0, 0]
+step.destroy(); state.destroy(); weights.destroy();</code></pre>
+<p>A batch starts open and exposes readonly encoder and status. submit() closes and submits it once without waiting for GPU completion; never finish or submit batch.encoder yourself. cancel() discards an open batch, is idempotent after cancellation, and throws UsageError after submission. Cancellation does not roll back external CPU writes, earlier submissions or PingPong.swap(). Kernels and resources must use the same shared device.</p>
+<p>Managed encoding supports repeated calls across one or several kernel instances and does not consume or reset the native guard. Aligned parameter arenas and scratch use a bounded per-device pool and become reusable after submitted GPU work completes. Encode helpers must be called outside an open pass.</p>
+
 <p>For full control of bindings and entry points, <code>rawKernel()</code> accepts complete WGSL. It also exposes prepare/encode/run, with bind-group entries and workgroup counts supplied by the caller.</p>
 <p>The <a href="/examples/sculpted-ribbon/">sculpted ribbon</a> composes wave propagation, geometry generation, normal calculation, and a native render pass. There is no intermediate CPU readback.</p>
 </section>
@@ -180,7 +244,8 @@ const total = await reduce.sum(input, data.length); // 31
 scan.destroy(); reduce.destroy();
 input.destroy(); output.destroy();</code></pre>
 <p>An exclusive scan excludes the current element; passing <code>false</code> selects an inclusive scan. Arithmetic wraps as u32. <code>createReduce().sum()</code> reads the total back to JavaScript; <code>sumInto()</code> writes it into a caller-provided GPU buffer.</p>
-<p>For custom submissions, prepare first, then use <code>scan.encode(encoder, src, dst, count, exclusive)</code> or <code>reduce.sumInto(encoder, src, count, dst)</code> with native GPUBuffer handles. These instances also have an encode-once guard; reset it with <code>endSubmit()</code> after submission.</p>
+<p>For native custom submissions, prepare first, then use scan.encode(encoder, src, dst, count, exclusive) or reduce.sumInto(encoder, src, count, dst) with native GPUBuffer handles. These native paths have an encode-once guard; reset it with endSubmit() after submission.</p>
+<p>For managed primitives, use scan.encode(batch.encoder, src, dst, count, true, batch) or reduce.sumInto(batch.encoder, src, count, dst, batch), then batch.submit(). Repeated encoding needs no endSubmit(). With a NeighborGrid, pass batch as the third grid.encode argument and consume its public cell ranges/order before the next grid build overwrites them.</p>
 <p><a href="/examples/prefix-sum/">Try the live GPU calculator →</a></p>
 </section>
 <section id="api-reference">
@@ -190,6 +255,8 @@ input.destroy(); output.destroy();</code></pre>
 <tr><td><code>GpuContext</code></td><td>Shared device context</td><td>get, adopt, device, sync, lost</td></tr>
 <tr><td><code>Buffer</code></td><td>Typed GPU storage</td><td>create, write, read, gpuBuffer, destroy</td></tr>
 <tr><td><code>elementKernel</code></td><td>Per-element WGSL compute</td><td>prepare, encode, endSubmit, run, replace, destroy</td></tr>
+<tr><td><code>createBatch</code></td><td>Managed submission scope</td><td>encoder, status, submit, cancel</td></tr>
+<tr><td><code>typedElementKernel</code></td><td>Opt-in typed kernel calls</td><td>prepare, encode, endSubmit, run, replace, destroy</td></tr>
 <tr><td><code>rawKernel</code></td><td>Caller-owned WGSL bindings</td><td>prepare, encode, run, destroy</td></tr>
 <tr><td><code>PingPong</code></td><td>Two matching buffer sets</td><td>create, current, other, swap, runWith, destroy</td></tr>
 <tr><td><code>defineSchema</code></td><td>A shared typed field table</td><td>fields, buffers, wgslStruct</td></tr>
@@ -207,7 +274,7 @@ input.destroy(); output.destroy();</code></pre>
 </section>
 <section id="release">
 <h2>Release and source</h2>
-<p>This site bundles the local <code>wgpu-kit@2.0.1</code> package built from this repository.</p>
+<p>This site bundles the <code>wgpu-kit@2.1.0</code> package built from this repository.</p>
 <p>The imported API documentation was audited against the published <code>wgpu-kit@2.0.0</code> npm package. At verification on September 30, 2026, npm latest and the repository’s default branch matched commit <code>306a7a7</code>.</p>
 <p>The custom ribbon, fields, image pipeline, and numeric tools are original application examples of the core APIs. Their source is available on the individual example pages and in the complete site download.</p>
 <ul><li><a href="https://github.com/nanfengw0w/wgpu-kit/tree/306a7a7233c9de8b433d179ed1164482143a4989" target="_blank" rel="noopener">Verified library source</a></li><li><a href="https://www.npmjs.com/package/wgpu-kit/v/2.0.0" target="_blank" rel="noopener">Published npm package</a></li><li><a href="https://github.com/nanfengw0w/wgpu-kit/archive/refs/heads/main.zip">Download this site’s complete source</a></li><li><a href="/assets/THIRD-PARTY-NOTICES.txt">Licenses and notices</a></li></ul>

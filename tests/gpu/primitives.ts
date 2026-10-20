@@ -4,7 +4,7 @@
  * 覆盖历史返工点:空输入、非 2 幂、单 workgroup 容量边界(65536±1)、
  * 多档路径(70000)、重复执行残留、全零/全一模式。
  */
-import { createScan, createReduce, Buffer, GpuContext } from '../../src/index.ts';
+import { createScan, createReduce, createBatch, Buffer, GpuContext } from '../../src/index.ts';
 
 const results: Array<{ name: string; pass: boolean; detail?: string }> = [];
 (window as unknown as { __results: unknown }).__results = results;
@@ -228,6 +228,44 @@ async function main() {
     report('dispatch 上限拒绝', scanThrew && reduceThrew, `scan 超限拒绝=${scanThrew} reduce 超限拒绝=${reduceThrew}(count=${OVER_SCAN.toLocaleString()})`);
     tinySrc.destroy();
     tinyDst.destroy();
+  }
+
+  // —— 同一 scan/reduce 实例批量处理不同 count,跨档并扩张 scratch;全部一次提交 ——
+  {
+    const batch = await createBatch();
+    const cases: Array<{
+      count: number; exclusive: boolean; src: Buffer; dst: Buffer; total: Buffer;
+      expected: Uint32Array; expectedTotal: number;
+    }> = [];
+    for (const [index, count] of [257, 70000, 131073, 65537, 1000, 0].entries()) {
+      const source = makeSrc(count, 'random');
+      const capacity = Math.max(count, 1);
+      const src = await Buffer.create('u32', capacity);
+      const dst = await Buffer.create('u32', capacity);
+      const total = await Buffer.create('u32', 1);
+      if (count > 0) src.write(source);
+      dst.write(new Uint32Array(capacity).fill(123456));
+      total.write(new Uint32Array([123456]));
+      const exclusive = index % 2 === 0;
+      const expected = cpuScan(source, exclusive);
+      let expectedTotal = 0;
+      for (const value of expected) expectedTotal = (expectedTotal + value) >>> 0;
+      scan.encode(batch.encoder, src.gpuBuffer, dst.gpuBuffer, count, exclusive, batch);
+      reduce.sumInto(batch.encoder, dst.gpuBuffer, count, total.gpuBuffer, batch);
+      cases.push({ count, exclusive, src, dst, total, expected, expectedTotal });
+    }
+    batch.submit();
+    for (const test of cases) {
+      const got = (await test.dst.read()) as Uint32Array;
+      const total = ((await test.total.read()) as Uint32Array)[0]!;
+      const scanOk = test.count === 0 ? got[0] === 123456 : bitwiseEq(got, test.expected) === -1;
+      report(`batch scan+reduce N=${test.count} ${test.exclusive ? 'exclusive' : 'inclusive'}`,
+        scanOk && total === test.expectedTotal,
+        `scan=${scanOk} sum=${total}(CPU ${test.expectedTotal});同实例/单提交`);
+      test.src.destroy();
+      test.dst.destroy();
+      test.total.destroy();
+    }
   }
 
   scan.destroy();

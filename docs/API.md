@@ -3,13 +3,17 @@
 # wgpu-kit API Reference
 
 > WebGPU compute for TypeScript. Requires a WebGPU-enabled browser. The compute core has no runtime dependencies.
-> Version: v2.0 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
+> Version: v2.1.0 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
+
+Version 2.1.0 releases `auxInputs`, dispatch counts, managed batches and
+`typedElementKernel`. The imported API audit retains npm 2.0.0 as its historical
+baseline; the 2.1.0 additions are documented from the corresponding source files.
 
 **Entry points**
 
 | Import | Contents |
 | --- | --- |
-| [wgpu-kit](#wgpu-kit--kernel-core) | GpuContext (incl. adopt) · Buffer · elementKernel · PingPong · rawKernel · defineSchema · definePack · createScan · createReduce · errors |
+| [wgpu-kit](#wgpu-kit--kernel-core) | GpuContext (incl. adopt) · Buffer · elementKernel · typedElementKernel · createBatch · PingPong · rawKernel · defineSchema · definePack · createScan · createReduce · errors |
 | [wgpu-kit/particles](#wgpu-kitparticles--particles) | particle-life simulation with GPU rendering |
 | [wgpu-kit/grid](#wgpu-kitgrid--generic-spatial-neighborhood) | generic spatial neighborhood (counting-sort hash, v2.0 encoding contract) |
 | [wgpu-kit/react](#wgpu-kitreact--particlecanvas) | `<ParticleCanvas />` |
@@ -171,6 +175,7 @@ await integrate.replace(`
 | name | string | Debug label (appears in errors) | `'kernel'` |
 | state | Record\<string, ScalarKind\> | Read-**write** buffers | `{}` |
 | inputs | Record\<string, ScalarKind\> | **Read-only** buffers | `{}` |
+| auxInputs | Record\<string, ScalarKind\> | **Read-only** auxiliary buffers of independent lengths; do not determine dispatch count | `{}` |
 | uniforms | Record\<string, ScalarKind\> | Uniform fields — declared as `ScalarKind` (f32/i32/u32/vec2f/…); the **values** passed at run/encode time are `UniformValue` (scalars or `{x,y,z?,w?}`) | `{}` |
 | workgroupSize | number | Workgroup size, range 1..512 | `64` |
 | code | string | User WGSL function, **must be named `userFn`** | required |
@@ -180,9 +185,10 @@ await integrate.replace(`
 1. The function must be named **`userFn`** (the only naming convention);
 2. First parameter is always `idx: u32` — out-of-range threads are guarded by the library;
 3. Following parameters receive `uniforms` values **in declaration order**;
-4. `state`/`inputs` field names are arrays inside the function — index them directly;
-5. `count` is a reserved name (injected automatically from the first resource);
-6. Field names across state/inputs/uniforms must not repeat.
+4. `state`/`inputs`/`auxInputs` field names are arrays inside the function — index them directly;
+5. `count` is a reserved uniform name, injected from the first state/input length or `options.count`;
+6. Field names across state/inputs/auxInputs/uniforms must not repeat;
+7. At least one `state` or `inputs` field is required; `auxInputs` alone cannot determine the iteration domain.
 
 **Lexical-analysis boundary (known limitation):** resource usage is detected
 after stripping comments, `struct` declarations, member accesses (`.field`)
@@ -206,7 +212,7 @@ or out-of-range workgroupSize.
 
 ### Methods
 
-##### .run ( resources, uniforms? ) : Promise\<void\>
+##### .run ( resources, uniforms?, options? ) : Promise\<void\>
 
 Dispatch one step (convenience = `prepare` + `encode` + internal submit).
 The promise covers preparation and submission, not GPU completion. Use a
@@ -214,34 +220,90 @@ readback or `GpuContext.sync()` when the CPU needs the finished result.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| resources | Record\<string, Buffer\> | Every state/inputs field mapped to a Buffer |
+| resources | Record\<string, Buffer\> | Every state/inputs/auxInputs field mapped to a matching Buffer on the shared device |
 | uniforms | Record\<string, UniformValue\> | Uniform values matching the declaration (scalars or `{x,y,z?,w?}` vectors) |
+| options | ElementKernelDispatchOptions | Optional dispatch count; pass `undefined` for uniforms when none are declared |
 
-Throws `UsageError` (missing resource / type mismatch / length mismatch) or
+Throws `UsageError` (missing resource / type mismatch / invalid count / insufficient capacity / dispatch limit) or
 `CompileError` (WGSL failure — **line numbers map back into your `code`**).
+
+### Dispatch options and auxiliary inputs
+
+`ElementKernelDispatchOptions` is an exported type: `{ count?: number }`.
+Omitting `count` preserves the default behavior: all `state` and `inputs`
+buffers must have the same length, and the first such buffer determines the
+dispatch count. With an explicit integer `count` in `0..0xffffffff`, their
+lengths may differ, but every `state` and `inputs` buffer must hold at least
+`count` elements. In both modes, `ceil(count / workgroupSize)` must fit the
+device's `maxComputeWorkgroupsPerDimension` limit.
+
+`auxInputs` may have independent lengths and never affect the count or
+per-element capacity checks. Every declared auxiliary buffer is still required
+and checked for kind, even if unused by the shader. Bound resources must belong
+to the shared device. Guard auxiliary indices in WGSL; use `arrayLength(&weights)` to query an auxiliary array's
+length. The generated invocation guard only bounds the iteration index.
+
+`count: 0` validates resources, uniforms and options, then performs no encoding
+or submission. It neither consumes nor clears an existing encode-once guard.
+
+```ts
+import { Buffer, elementKernel } from 'wgpu-kit';
+import type { ElementKernelDispatchOptions } from 'wgpu-kit';
+
+const output = await Buffer.create('f32', 6);
+const source = await Buffer.create('f32', 4);
+const weights = await Buffer.create('f32', 3);
+source.write(new Float32Array([1, 2, 3, 4]));
+weights.write(new Float32Array([10, 20, 30]));
+
+const scale = elementKernel({
+  state: { output: 'f32' },
+  inputs: { source: 'f32' },
+  auxInputs: { weights: 'f32' },
+  code: `fn userFn(i: u32) {
+    output[i] = source[i] * weights[i % arrayLength(&weights)];
+  }`,
+});
+const options: ElementKernelDispatchOptions = { count: 4 };
+await scale.run({ output, source, weights }, undefined, options);
+console.log(Array.from(await output.read())); // [10, 40, 90, 40, 0, 0]
+scale.destroy();
+output.destroy(); source.destroy(); weights.destroy();
+```
 
 ##### .prepare ( ) : Promise\<void\> — v2.0
 
 Idempotent async setup: resolve context, compile pipeline, allocate internal
 resources. Must complete before `encode`.
 
-##### .encode ( encoder, resources, uniforms? ) : void — v2.0
+##### .encode ( encoder, resources, uniforms?, options? ) : void — v2.0
 
 Synchronous encoding: write this dispatch into **your** command encoder without
 submitting. Compose multiple kernels into one command chain, submit when you
-decide. **encode-once-per-submit contract**: the instance shares one uniform
-snapshot buffer — encoding the same instance twice before a submit overwrites
+decide. `options` uses the exported `ElementKernelEncodeOptions` type,
+`{ count?: number; batch?: ComputeBatch }`.
+
+**Native path (without `options.batch`) — encode-once-per-submit contract**: the instance shares one uniform
+snapshot buffer — encoding the same instance twice with nonzero counts before a submit overwrites
 the first snapshot and is rejected with `UsageError`. After your submit, call
 `.endSubmit()` to re-arm (or use one kernel instance per concurrent encode;
 `.resetEncodeGuard()` opts out entirely).
 
+`resources`, `uniforms` and `options` follow the same validation and count rules
+as `run()`. For example, `scale.encode(encoder, resources, undefined, { count: 4 })`
+records four invocations; call `endSubmit()` after submitting a native encoder.
+With `{ count: 4, batch }`, use `batch.encoder` and `batch.submit()` instead;
+repeated encoding on that instance is supported and needs no `endSubmit()`.
+
 ##### .endSubmit ( ) : void — v2.0
 
-Re-arm the encode-once guard after your own submit of a composed encoder.
+Re-arm the native encode-once guard after your own submit of a composed encoder.
+Managed batch encoding does not use or change this guard.
 
 ##### .resetEncodeGuard ( ) : void — v2.0
 
-Advanced: disable the encode-once guard (you own the overwrite semantics).
+Advanced: disable the native encode-once guard (you own the overwrite semantics).
+Managed batches already provide independent snapshots and do not require this escape hatch.
 
 ##### .replace ( code : string ) : Promise\<void\>
 
@@ -255,11 +317,89 @@ Frees the pipeline and uniform buffer (does not touch passed-in Buffers).
 
 ---
 
+## Managed batches and typed kernels (2.1.0)
+
+`createBatch(): Promise<ComputeBatch>` creates one submission scope on the shared
+device. Await each kernel's `prepare()` first, then encode into `batch.encoder`
+with `{ batch }` as the fourth argument. `ElementKernelEncodeOptions` extends
+`ElementKernelDispatchOptions` with `batch?: ComputeBatch`; `run()` still accepts
+only the dispatch options `{ count?: number }` and submits internally.
+
+| ComputeBatch member | Contract |
+| --- | --- |
+| `readonly encoder: GPUCommandEncoder` | Append compute or native passes while open; call encoding helpers outside an open pass |
+| `readonly status: 'open' \| 'submitted' \| 'cancelled'` | Submission lifecycle; starts as `open` |
+| `submit(): void` | Finish and submit once; returns before GPU completion |
+| `cancel(): void` | Discard an open batch; repeated cancellation is harmless; cancelling a submitted batch throws `UsageError` |
+
+The batch owns submission: do not finish or submit `batch.encoder` yourself.
+Submitting a closed batch or encoding managed work after submit/cancel throws
+`UsageError`. Kernels and resources must use the same shared device. Readback or
+`GpuContext.sync()` waits when the CPU needs finished results.
+
+Each managed dispatch receives an independent uniform snapshot, so one instance
+or several instances can be encoded repeatedly with different parameters in one
+batch. This path neither consumes nor resets the native encode-once guard and
+needs no `endSubmit()`. Aligned parameter arenas and temporary storage use a
+bounded per-device pool; submitted allocations become reusable only after GPU
+completion. `cancel()` discards the encoded commands but does not roll back
+external CPU writes, earlier submissions, or calls such as `PingPong.swap()`.
+
+`typedElementKernel<const S extends ElementKernelSpec>(spec: S): TypedElementKernel<S>`
+is an opt-in TypeScript call interface. It infers resource names and Buffer kinds
+from `state`, `inputs` and `auxInputs`, and scalar/vector uniform values from
+`uniforms`. Declared uniforms are required at the call site. The exported
+`TypedElementKernelResources<S>` and `TypedElementKernelUniforms<S>` types expose
+these inferred maps. Preserve literal field kinds when storing a spec separately.
+The original `elementKernel` and its broad `Record` calls remain compatible.
+Types do not check WGSL function bodies; the shader compiler still checks them.
+
+The following complete example records 20 PingPong steps using the same typed
+kernel, a different uniform for each step, a four-element dispatch prefix and an
+independently sized auxiliary lookup table. Only the final readback waits:
+
+```ts
+import { Buffer, PingPong, createBatch, typedElementKernel } from 'wgpu-kit';
+
+const state = await PingPong.create({ value: 'f32' }, 6);
+const weights = await Buffer.create('f32', 3);
+state.current.value.write(new Float32Array([1, 2, 3, 4, 0, 0]));
+weights.write(new Float32Array([1, 2, 3]));
+
+const step = typedElementKernel({
+  state: { next: 'f32' },
+  inputs: { previous: 'f32' },
+  auxInputs: { weights: 'f32' },
+  uniforms: { delta: 'f32' },
+  code: `fn userFn(i: u32, delta: f32) {
+    next[i] = previous[i] + weights[i % arrayLength(&weights)] * delta;
+  }`,
+});
+await step.prepare();
+const batch = await createBatch();
+for (let iteration = 0; iteration < 20; iteration++) {
+  step.encode(batch.encoder, {
+    next: state.other.value,
+    previous: state.current.value,
+    weights,
+  }, { delta: iteration + 1 }, { count: 4, batch });
+  state.swap();
+}
+batch.submit();
+console.log(Array.from(await state.current.value.read()));
+// [211, 422, 633, 214, 0, 0]
+step.destroy(); state.destroy(); weights.destroy();
+```
+
 ## PingPong
 
 Double buffering for iterative simulations: read the "current" side, write
 the "other" side, `swap()` at end of frame. Essential for particle, fluid and
 cellular simulations.
+
+Version 2.1.0 preserves literal Buffer kinds from `PingPong.create({ value: 'f32' }, n)`
+on `current`, `other` and `clone()`, so these buffers can be passed directly to
+`typedElementKernel`. Existing `PingPong<K>` and explicit field-name generic calls remain compatible.
 
 ### Constructor
 
@@ -715,9 +855,9 @@ depends on cell occupancy and the interaction radius.
 | .cellFill | Buffer (readonly) | end slot per cell (fill cursor) |
 | .order | Buffer (readonly) | entity indices in cell order |
 | .prepare ( ) : Promise\<void\> — v2.0 | idempotent setup (resolves the internal scan primitive) |
-| .encode ( encoder : GPUCommandEncoder, pos : Buffer ) : void — v2.0 | write counts → scan → post → scatter into **your** encoder without submitting (compose with your force kernels in one chain) |
+| .encode ( encoder : GPUCommandEncoder, pos : Buffer, batch? : ComputeBatch ) : void | write counts → scan → post → scatter into **your** encoder without submitting (compose with your force kernels in one chain) |
 | .update ( pos : Buffer ) : void | convenience = internal encoder + submit |
-| .endSubmit ( ) : void — v2.0 | re-arm the internal scan's encode-once guard after your own submit |
+| .endSubmit ( ) : void — v2.0 | re-arm the internal scan's native encode-once guard after your own submit |
 | .destroy ( ) : void | release |
 
 ### Code Example
@@ -730,25 +870,33 @@ const grid = await createNeighborGrid({ count: 100_000, worldHalf: 1.0, cellSize
 grid.update(posBuffer);
 ```
 
+For managed composition, await `grid.prepare()`, then call
+`grid.encode(batch.encoder, posBuffer, batch)` and `batch.submit()`. No
+`endSubmit()` is needed in this path, and the same instance may rebuild repeatedly.
+Consume `cellStart`, `cellFill` and `order` before the next build overwrites them;
+independent internal scratch does not make the public output buffers snapshots.
+
 ---
 
 # wgpu-kit · createScan / createReduce
 
 u32 prefix scan uses a single-workgroup path up to 65536 elements and a
 three-pass pipeline above that. u32 reduction exposes `sumInto` for a
-GPU-resident result and `sum` for a CPU readback. Both follow the same encode-once
-contract as kernels: encode once per submit, then call `endSubmit()`.
+GPU-resident result and `sum` for a CPU readback. Without a batch, both follow
+the native encode-once contract: encode once per submit, then call `endSubmit()`.
+Passing a batch gives each call independent parameters and scratch, supports
+repeated encoding, and leaves that native guard unchanged.
 
 ### Methods
 
 | Method | Behavior |
 | --- | --- |
 | `scan.prepare()` / `reduce.prepare()` | Async pipeline setup; complete before encoding |
-| `scan.encode(encoder, src, dst, count, exclusive = true)` | Write a u32 prefix scan into GPUBuffer `dst` |
+| `scan.encode(encoder, src, dst, count, exclusive = true, batch?)` | Write a u32 prefix scan into GPUBuffer `dst` |
 | `scan.run(src, dst, count, exclusive = true)` | Buffer-based convenience path with an internal submit |
-| `reduce.sumInto(encoder, src, count, dst)` | Write a u32 sum into GPUBuffer `dst` without readback |
+| `reduce.sumInto(encoder, src, count, dst, batch?)` | Write a u32 sum into GPUBuffer `dst` without readback |
 | `reduce.sum(src, count)` | Return the sum as a JavaScript number after readback |
-| `endSubmit()` | Re-arm that instance after a caller-owned submit |
+| `endSubmit()` | Re-arm the native guard after a caller-owned submit |
 | `destroy()` | Release internal buffers and cached pipeline references |
 
 Encoding methods take native GPUBuffer handles; `run` and `sum` take wgpu-kit
@@ -786,6 +934,20 @@ src.destroy();
 prefix.destroy();
 total.destroy();
 ```
+
+For a managed version of the example, replace encoder creation through the
+`endSubmit()` calls with:
+
+```ts
+const batch = await createBatch(); // also import createBatch from 'wgpu-kit'
+scan.encode(batch.encoder, src.gpuBuffer, prefix.gpuBuffer, count, true, batch);
+reduce.sumInto(batch.encoder, prefix.gpuBuffer, count, total.gpuBuffer, batch);
+batch.submit();
+```
+
+The scan batch is the sixth argument; pass `true` explicitly to retain the
+default exclusive scan when supplying it. The reduction batch is the fifth
+argument. Consume a shared destination before a later call overwrites it.
 
 Dispatch limits follow the WebGPU spec — validated up front with clear
 `UsageError`s: block count ≤ 65535 (`scan`, i.e. count ≤ 8192 × 65535) and

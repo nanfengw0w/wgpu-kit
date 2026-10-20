@@ -1,26 +1,13 @@
 import { GpuContext } from '../core/context.ts';
 import { Buffer } from '../core/buffer.ts';
 import { UsageError, ERR } from '../core/errors.ts';
+import { batchStorage, batchUniform, validateBatch, type ComputeBatch } from '../core/batch.ts';
 
 /**
- * scan —— u32 前缀和原语(v2.0 core 原语层第一个成员)。
- *
- * 双档实现,按 count 自动选择:
- *   单档(默认,N ≤ 65536):单 workgroup 分块循环 + workgroup 级 carry,
- *     dispatch(1)。barrier 在单 workgroup 内是合法同步,正确性不依赖时序。
- *   多档(N > 65536):三级,全部以独立 pass 写入调用方 encoder —— 铁律:
- *     同一 dispatch 内跨 workgroup 无内存可见性保证,必须 pass 边界。
- *     ① scan_block :各 workgroup 扫自己的 8192 元素段(strided 局部和 +
- *        Hillis-Steele),写段内排他前缀与 blockSums[wid] 段总和
- *     ② scan_bases :单 workgroup 分块循环扫 blockSums(排他,原地)
- *     ③ add_bases  :各 workgroup 给段内元素加基址(含前缀语义时并回 src 元素)
- *
- * 语义:exclusive: dst[i] = Σ src[0..i);inclusive: dst[i] = Σ src[0..i]。
- * u32 回绕算术,与 CPU 位一致(探针验证)。
- *
- * 历史注记:scan 在 grid/particles 各手写过一遍,4 条相关提交中 3 条是修复
- * (多 workgroup 可见性、cellFill 游标语义、dispatch 截断)。本原语是那些
- * 教训的制度化。
+ * u32 exclusive/inclusive scan with wrapping arithmetic.
+ * Up to 65536 elements use one workgroup; larger inputs scan 8192-element
+ * blocks, scan block sums, then add bases. Separate passes provide visibility
+ * between stages; workgroup barriers alone cannot synchronize different groups.
  */
 
 const WG = 256;
@@ -168,7 +155,7 @@ fn add_bases(
 `;
 
 const USIZE = 16;
-const BLOCK_COUNT_CAP = TIER1_CAP - 1; // WebGPU maxComputeWorkgroupsPerDimension = 65535(第四轮审查 P2)
+const BLOCK_COUNT_CAP = TIER1_CAP - 1; // WebGPU workgroup 维度上限
 
 export interface Scan {
   /** 幂等准备:解析上下文与内部 uniform。encode 前必须完成 */
@@ -176,11 +163,10 @@ export interface Scan {
   /**
    * 同步编码:把前缀和命令写入调用方 encoder(多档时为 1~3 个独立 pass)。
    * src/dst 为 u32 storage 用法的原生 GPUBuffer(count=0 时为 no-op)。
-   * encode-once-per-submit 合同(与 elementKernel 一致):paramsA 是实例共享的,
-   * 一次提交前重复 encode 会覆盖参数快照——guard 拒绝之;自定义 submit 流程
-   * 在提交后调用 endSubmit() 重置。
+   * 不传 batch 时同实例每次提交只能 encode 一次,提交后调 endSubmit()。
+   * 传入 batch 时参数和 scratch 独立,允许同实例重复编码。
    */
-  encode(encoder: GPUCommandEncoder, src: GPUBuffer, dst: GPUBuffer, count: number, exclusive?: boolean): void;
+  encode(encoder: GPUCommandEncoder, src: GPUBuffer, dst: GPUBuffer, count: number, exclusive?: boolean, batch?: ComputeBatch): void;
   /** [v2.0] 自定义 submit 流程完成后调用:重置 encode-once 检测 */
   endSubmit(): void;
   /** 高级:解除 encode-once 检测(自行承担参数覆盖语义) */
@@ -202,19 +188,18 @@ export function createScan(): Scan {
   let paramsB: GPUBuffer | null = null; // blockCount(pBases)
   let blockSums: GPUBuffer | null = null;
   let blockSumsCap = 0;
-  // encode-once-per-submit 合同(外部审查复审 P1-1):paramsA 共享,提交前
-  // 重复 encode 会覆盖参数;guard 在校验后打开、run/endSubmit 关闭
+  // 仅 legacy 编码使用共享参数和 guard。
   let guardArmed = true;
   let guardOpen = false;
 
-  const writeParams = (buf: GPUBuffer, count: number, exclusive: boolean, blockCount: number) => {
+  const packParams = (count: number, exclusive: boolean, blockCount: number): ArrayBuffer => {
     const b = new ArrayBuffer(USIZE);
     const v = new DataView(b);
     v.setUint32(0, count, true);
     v.setUint32(4, exclusive ? 1 : 0, true);
     v.setUint32(8, blockCount, true);
     v.setUint32(12, 0, true);
-    ctx!.device.queue.writeBuffer(buf, 0, b);
+    return b;
   };
 
   return {
@@ -240,31 +225,34 @@ export function createScan(): Scan {
       paramsB = device.createBuffer({ size: USIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: 'scan-params-b' });
     },
 
-    encode(encoder: GPUCommandEncoder, src: GPUBuffer, dst: GPUBuffer, count: number, exclusive = true): void {
+    encode(encoder: GPUCommandEncoder, src: GPUBuffer, dst: GPUBuffer, count: number, exclusive = true, batch?: ComputeBatch): void {
       if (!ctx || !pipelines || !paramsA || !paramsB) {
         throw new UsageError(ERR.USAGE, 'scan.encode called before prepare() — await scan.prepare() first');
-      }
-      // encode-once guard 在参数校验**之后**打开(P2-1 教训:校验抛错不锁闸)
-      if (guardArmed && guardOpen) {
-        throw new UsageError(ERR.USAGE, 'scan.encode called twice before submit — shared params would be overwritten (encode-once-per-submit contract). Call endSubmit() after your submit, or use scan.run().');
       }
       if (!Number.isInteger(count) || count < 0) {
         throw new UsageError(ERR.USAGE, `scan count must be a non-negative integer, got ${String(count)}`);
       }
-      if (count === 0) return; // 空输入 no-op(不打开 guard)
       if (count > SEGMENT * BLOCK_COUNT_CAP) {
         throw new UsageError(ERR.USAGE, `scan count ${count} exceeds supported cap ${SEGMENT * BLOCK_COUNT_CAP}`);
       }
-      if (guardArmed) guardOpen = true;
       const device = ctx.device;
+      if (batch) validateBatch(batch, encoder, device);
+      if (count === 0) return;
+      if (!batch && guardArmed && guardOpen) {
+        throw new UsageError(ERR.USAGE, 'scan.encode called twice before submit — shared params would be overwritten (encode-once-per-submit contract). Call endSubmit() after your submit, or use scan.run().');
+      }
+      if (!batch && guardArmed) guardOpen = true;
+      const blockCount = count <= TIER1_CAP ? 0 : Math.ceil(count / SEGMENT);
+      const dataA = packParams(count, exclusive, blockCount);
+      const uniformA = batch ? batchUniform(batch, encoder, device, dataA) : { buffer: paramsA };
+      if (!batch) device.queue.writeBuffer(paramsA, 0, dataA);
 
       if (count <= TIER1_CAP) {
         // —— 单档:dispatch(1) ——
-        writeParams(paramsA, count, exclusive, 0);
         const bg = device.createBindGroup({
           layout: pipelines.pSingle.getBindGroupLayout(0),
           entries: [
-            { binding: 0, resource: { buffer: paramsA } },
+            { binding: 0, resource: uniformA },
             { binding: 1, resource: { buffer: src } },
             { binding: 2, resource: { buffer: dst } },
           ],
@@ -278,43 +266,49 @@ export function createScan(): Scan {
       }
 
       // —— 多档:三级,独立 pass ——
-      const blockCount = Math.ceil(count / SEGMENT);
-      if (blockCount > blockSumsCap) {
-        blockSums?.destroy();
-        blockSums = device.createBuffer({
-          size: blockCount * 4,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-          label: 'scan-blocksums',
-        });
-        blockSumsCap = blockCount;
+      let scratch: GPUBuffer;
+      if (batch) {
+        scratch = batchStorage(batch, encoder, device, blockCount * 4);
+      } else {
+        if (blockCount > blockSumsCap) {
+          blockSums?.destroy();
+          blockSums = device.createBuffer({
+            size: blockCount * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            label: 'scan-blocksums',
+          });
+          blockSumsCap = blockCount;
+        }
+        scratch = blockSums!;
       }
-      writeParams(paramsA, count, exclusive, blockCount);
-      writeParams(paramsB, blockCount, true, 0);
+      const dataB = packParams(blockCount, true, 0);
+      const uniformB = batch ? batchUniform(batch, encoder, device, dataB) : { buffer: paramsB };
+      if (!batch) device.queue.writeBuffer(paramsB, 0, dataB);
 
       const bgBlock = device.createBindGroup({
         layout: pipelines.pBlock.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: paramsA } },
+          { binding: 0, resource: uniformA },
           { binding: 1, resource: { buffer: src } },
           { binding: 2, resource: { buffer: dst } },
-          { binding: 3, resource: { buffer: blockSums! } },
+          { binding: 3, resource: { buffer: scratch } },
         ],
       });
       const bgBases = device.createBindGroup({
         layout: pipelines.pBases.getBindGroupLayout(0),
         // scan_bases 只静态使用 params(0) 与 blockSums(3) —— 多给即校验失败
         entries: [
-          { binding: 0, resource: { buffer: paramsB } },
-          { binding: 3, resource: { buffer: blockSums! } },
+          { binding: 0, resource: uniformB },
+          { binding: 3, resource: { buffer: scratch } },
         ],
       });
       const bgAdd = device.createBindGroup({
         layout: pipelines.pAdd.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: paramsA } },
+          { binding: 0, resource: uniformA },
           { binding: 1, resource: { buffer: src } },
           { binding: 2, resource: { buffer: dst } },
-          { binding: 3, resource: { buffer: blockSums! } },
+          { binding: 3, resource: { buffer: scratch } },
         ],
       });
 
@@ -342,6 +336,7 @@ export function createScan(): Scan {
       await this.prepare();
       const enc = ctx!.device.createCommandEncoder();
       this.encode(enc, src.gpuBuffer, dst.gpuBuffer, count, exclusive);
+      if (count === 0) return;
       ctx!.device.queue.submit([enc.finish()]);
       guardOpen = false;
     },

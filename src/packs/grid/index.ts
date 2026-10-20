@@ -3,6 +3,7 @@ import { Buffer } from '../../core/buffer.ts';
 import { CompileError } from '../../core/errors.ts';
 import { createShaderModuleChecked } from '../../core/shader.ts';
 import { createScan, type Scan } from '../../primitives/scan.ts';
+import { validateBatch, type ComputeBatch } from '../../core/batch.ts';
 
 /**
  * NeighborGrid —— 通用空间邻域加速(计数排序 spatial hash)。
@@ -15,10 +16,7 @@ import { createScan, type Scan } from '../../primitives/scan.ts';
  *   // 每帧:先 update(按位置建格),再让你的力 kernel 读 cellStart/cellFill/order
  *   grid.update(posBuffer);
  *
- * [v2.0] scan 本体走 core 原语(双档位一致验证);本包只保留 counts/scatter
- * 两个专用 kernel + 一个 post(fill 游标归位 + counts 清零)。
- * 外部审查 P1-4 修复:旧 main_scan 的绑定声明错位(bgScan 绑 1/2/3 而 shader
- * 声明 2/3/4,公开路径建格全错)且 strided 前缀越界——原语化后整类问题消失。
+ * counts → core scan → post(fill 归位并清空 counts) → scatter。
  */
 export interface NeighborGridConfig {
   /** 粒子/实体数量 */
@@ -42,9 +40,9 @@ export interface NeighborGrid {
   /** [v2.0] 幂等准备(含 core scan 原语);encode 前必须完成 */
   prepare(): Promise<void>;
   /** [v2.0] 同步编码:counts → scan(原语) → post → scatter 写入调用方 encoder(不提交)。
-   *  内部 scan 原语带 encode-once 合同:同实例一次提交前重复 encode 会被拒绝,
-   *  自定义 submit 后调用 endSubmit() 重置。 */
-  encode(encoder: GPUCommandEncoder, pos: Buffer): void;
+   *  不传 batch 时同实例每次提交只能编码一次,提交后调 endSubmit()。
+   *  batch 支持同实例重复编码;输出仍共享,应在下一次建格前消费。 */
+  encode(encoder: GPUCommandEncoder, pos: Buffer, batch?: ComputeBatch): void;
   /** [v2.0] 自定义 submit 流程完成后调用:重置内部 scan 的 encode-once 闸 */
   endSubmit(): void;
   /** 建格:便捷路径 = 内部 encoder + 提交 */
@@ -88,7 +86,7 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
   const order = await Buffer.create('u32', count);
   cellCount.write(new Uint32Array(cells));
 
-  // core scan 原语(双档位一致验证,外部审查 P1-4 的根治)
+  // core scan 负责前缀和。
   const scan = createScan();
   await scan.prepare();
 
@@ -129,7 +127,8 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
   });
 
 
-  const encodeImpl = (encoder: GPUCommandEncoder, pos: Buffer): void => {
+  const encodeImpl = (encoder: GPUCommandEncoder, pos: Buffer, batch?: ComputeBatch): void => {
+    if (batch) validateBatch(batch, encoder, device);
     writeUniform();
     // 独立 pass:同 pass 连续 dispatch 的存储可见性规范不保证(Dawn/Windows 实测)
     const pass1 = encoder.beginComputePass({ label: 'ngrid-counts' });
@@ -139,7 +138,7 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
     pass1.end();
 
     // scan 原语:自管 pass 写进本 encoder(counts → cellStart 排他前缀)
-    scan.encode(encoder, cellCount.gpuBuffer, cellStart.gpuBuffer, cells, true);
+    scan.encode(encoder, cellCount.gpuBuffer, cellStart.gpuBuffer, cells, true, batch);
 
     const pass3 = encoder.beginComputePass({ label: 'ngrid-post' });
     pass3.setPipeline(pPost);
@@ -165,7 +164,7 @@ export async function createNeighborGrid(config: NeighborGridConfig): Promise<Ne
       await scan.prepare(); // 幂等;其余管线在 create 时已同步编译
     },
 
-    encode: (encoder, pos) => encodeImpl(encoder, pos),
+    encode: (encoder, pos, batch) => encodeImpl(encoder, pos, batch),
 
     /** 自定义 submit 流程完成后调用:重置内部 scan 原语的 encode-once 闸 */
     endSubmit(): void {

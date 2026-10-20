@@ -1,6 +1,6 @@
 {
   "name": "wgpu-kit",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Composable WebGPU compute for the browser, with GPU-resident data and zero runtime dependencies.",
   "type": "module",
   "license": "MIT",

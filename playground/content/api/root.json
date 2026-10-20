@@ -1,6 +1,7 @@
 {
   "package": "wgpu-kit",
-  "version": "2.0.0",
+  "version": "2.1.0",
+  "auditBaseline": "2.0.0",
   "entrypoints": [
     {
       "path": "wgpu-kit",
@@ -408,7 +409,7 @@
             "en": "Generate and manage a one-invocation-per-element compute kernel. Creation itself is synchronous; GPU preparation is lazy.",
             "zh": "生成并管理每元素一次调用的计算内核。创建本身同步；GPU 准备延迟进行。"
           },
-          "source": "dist/core/kernel.js",
+          "source": "src/core/kernel.ts",
           "parameters": [
             {
               "name": "spec",
@@ -429,12 +430,32 @@
           },
           "constraints": [
             {
-              "en": "All declared state/input buffers must be present, have the declared kind, share one device, and have the same element length. Even statically unused declared fields are checked. Extra resource/uniform keys are ignored.",
-              "zh": "所有声明的 state/input 缓冲区必须存在、类型匹配、使用同一设备且元素长度相同；即使静态未使用的声明字段也会校验。额外资源／uniform 键被忽略。"
+              "en": "New in 2.1.0: auxInputs, options.count and ElementKernelDispatchOptions are documented from src/core/kernel.ts and src/index.ts; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：auxInputs、options.count 与 ElementKernelDispatchOptions 依据 src/core/kernel.ts 和 src/index.ts 记录，在 npm 2.0.0 历史审计基线之上扩展。"
             },
             {
-              "en": "Field names must be unique across state, inputs and uniforms. The uniform name count is reserved and automatically injected. Use valid WGSL identifiers; the compiler checks reserved words.",
-              "zh": "字段名在 state、inputs、uniforms 之间必须唯一。uniform 名 count 为保留名称，由库自动注入。应使用有效 WGSL 标识符，保留字由编译器检查。"
+              "en": "All declared state/input/auxInputs buffers must be present and have the declared kind, including statically unused fields. Bound resources must belong to the shared device. Extra resource/uniform keys are ignored.",
+              "zh": "所有声明的 state/input/auxInputs 缓冲必须存在且类型匹配，包括静态未使用的字段。参与绑定的资源须属于共享设备。额外资源／uniform 键被忽略。"
+            },
+            {
+              "en": "Without options.count, state and inputs must have equal lengths and the first such buffer determines the invocation count. At least one state or inputs field is required; auxInputs do not determine the count.",
+              "zh": "省略 options.count 时，state 与 inputs 必须等长，调用数量取首个此类缓冲长度。至少需要一个 state 或 inputs 字段；auxInputs 不参与数量推导。"
+            },
+            {
+              "en": "An explicit count must be an integer in 0..0xffffffff. State/input lengths may differ, but every such buffer must contain at least count elements. In either mode, ceil(count / workgroupSize) must not exceed device.limits.maxComputeWorkgroupsPerDimension.",
+              "zh": "显式 count 须为 0..0xffffffff 内的整数。state/input 可不同长，但每个缓冲都必须至少容纳 count 个元素。两种模式下，ceil(count / workgroupSize) 均不得超过 device.limits.maxComputeWorkgroupsPerDimension。"
+            },
+            {
+              "en": "Auxiliary arrays are read-only and may have independent lengths. They do not participate in per-element capacity checks; auxiliary indexing bounds are the WGSL author's responsibility. Query their lengths with arrayLength(&weights).",
+              "zh": "辅助数组只读且长度独立，不参与逐元素容量校验；辅助索引边界由 WGSL 作者负责。可用 arrayLength(&weights) 查询长度。"
+            },
+            {
+              "en": "count: 0 validates all resources, uniforms and options, then performs no encoding or submission. It neither consumes nor clears an existing encode-once guard.",
+              "zh": "count: 0 完整校验全部资源、uniform 与选项后，不编码、不提交，也不消耗或清除已有的 encode-once 检查状态。"
+            },
+            {
+              "en": "Field names must be unique across state, inputs, auxInputs and uniforms. The uniform name count is reserved and automatically injected. Use valid WGSL identifiers; the compiler checks reserved words.",
+              "zh": "字段名在 state、inputs、auxInputs、uniforms 之间必须唯一。uniform 名 count 为保留名称，由库自动注入。应使用有效 WGSL 标识符，保留字由编译器检查。"
             },
             {
               "en": "Do not read neighboring elements from a buffer being concurrently written in the same dispatch; use separate input/output buffers or PingPong. The library does not provide global synchronization inside a dispatch.",
@@ -443,6 +464,10 @@
             {
               "en": "The generated source uses lexical resource-use analysis; shadowing a resource name with a local variable is a known analysis limitation.",
               "zh": "生成源码使用词法资源使用分析；局部变量遮蔽资源名是已知分析限制。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
             }
           ],
           "errors": [
@@ -471,26 +496,348 @@
                 "en": "Manual command-encoder composition",
                 "zh": "手动命令编码器组合"
               }
+            },
+            {
+              "language": "typescript",
+              "caption": {
+                "en": "Independent auxiliary length and an explicit buffer prefix (new in 2.1.0)",
+                "zh": "独立辅助长度与显式缓冲前缀（2.1.0 新增）"
+              },
+              "code": "import { Buffer, elementKernel } from 'wgpu-kit';\nimport type { ElementKernelDispatchOptions } from 'wgpu-kit';\n\nconst output = await Buffer.create('f32', 6);\nconst source = await Buffer.create('f32', 4);\nconst weights = await Buffer.create('f32', 3);\nsource.write(new Float32Array([1, 2, 3, 4]));\nweights.write(new Float32Array([10, 20, 30]));\n\nconst scale = elementKernel({\n  state: { output: 'f32' },\n  inputs: { source: 'f32' },\n  auxInputs: { weights: 'f32' },\n  code: `fn userFn(i: u32) {\n    output[i] = source[i] * weights[i % arrayLength(&weights)];\n  }`,\n});\nconst options: ElementKernelDispatchOptions = { count: 4 };\nawait scale.run({ output, source, weights }, undefined, options);\nconsole.log(Array.from(await output.read())); // [10, 40, 90, 40, 0, 0]\nscale.destroy();\noutput.destroy(); source.destroy(); weights.destroy();"
+            }
+          ]
+        },
+        {
+          "name": "createBatch",
+          "kind": "function",
+          "signature": "createBatch(): Promise<ComputeBatch>",
+          "description": {
+            "en": "Create an open, owned compute submission scope. Added in 2.1.0.",
+            "zh": "创建 open 的托管计算提交作用域。2.1.0 新增。"
+          },
+          "source": "src/core/batch.ts",
+          "parameters": [],
+          "returns": {
+            "type": "Promise<ComputeBatch>",
+            "description": {
+              "en": "A new batch with a readonly encoder and status on the shared device. Does not prepare kernels for you.",
+              "zh": "共享设备上的新批次，具有只读 encoder 与 status；不会替你准备内核。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            },
+            {
+              "en": "The batch owns encoder completion and submission: never call encoder.finish() or device.queue.submit() for batch.encoder yourself. Append native passes only while open, and call managed helpers outside any active pass.",
+              "zh": "批次拥有 encoder 的结束与提交权：请勿自行对 batch.encoder 调用 finish() 或 device.queue.submit()。仅在 open 时追加原生 pass，且托管助手须在没有打开 pass 时调用。"
+            },
+            {
+              "en": "Each managed dispatch receives an independent aligned parameter range and any required private scratch. Resources are pooled per device with bounded retained memory; submitted allocations are recycled only after GPU completion. Caller-owned storage outputs remain shared.",
+              "zh": "每次托管 dispatch 获得独立对齐参数区间及所需私有 scratch。资源按设备池化，保留内存有上限；已提交分配仅在 GPU 完成后回收。调用方 storage 输出仍共享。"
+            },
+            {
+              "en": "Cancellation discards encoded commands and managed allocations; it does not roll back external CPU writes, earlier submissions, or PingPong.swap().",
+              "zh": "取消丢弃已编码命令与托管分配，不回滚外部 CPU 写入、此前提交或 PingPong.swap()。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "caption": {
+                "en": "Create and cancel an unsubmitted scope",
+                "zh": "创建并取消尚未提交的作用域"
+              },
+              "code": "import { createBatch } from 'wgpu-kit';\nconst batch = await createBatch();\nconsole.log(batch.status); // 'open'\nbatch.cancel();\nbatch.cancel(); // idempotent\nconsole.log(batch.status); // 'cancelled'"
+            }
+          ]
+        },
+        {
+          "name": "ComputeBatch",
+          "kind": "interface",
+          "signature": "export interface ComputeBatch { readonly encoder: GPUCommandEncoder; readonly status: 'open' | 'submitted' | 'cancelled'; submit(): void; cancel(): void; }",
+          "description": {
+            "en": "Owned submission lifecycle returned by createBatch(). Added in 2.1.0.",
+            "zh": "createBatch() 返回的托管提交生命周期。2.1.0 新增。"
+          },
+          "source": "src/core/batch.ts",
+          "typeDetails": [
+            {
+              "name": "encoder",
+              "type": "GPUCommandEncoder",
+              "required": true,
+              "description": {
+                "en": "Readonly encoder owned by this scope; append work while open.",
+                "zh": "此作用域拥有的只读 encoder；open 时追加任务。"
+              }
+            },
+            {
+              "name": "status",
+              "type": "'open' | 'submitted' | 'cancelled'",
+              "required": true,
+              "description": {
+                "en": "Readonly state; created open and closed permanently by submit/cancel.",
+                "zh": "只读状态；初始 open，经 submit/cancel 后永久关闭。"
+              },
+              "default": "open"
+            }
+          ],
+          "members": [
+            {
+              "name": "submit",
+              "kind": "method",
+              "signature": "submit(): void",
+              "description": {
+                "en": "Finish and submit the open batch once; returns before GPU completion.",
+                "zh": "结束并提交 open 批次一次；返回时不保证 GPU 已完成。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "The batch owns encoder completion and submission: never call encoder.finish() or device.queue.submit() for batch.encoder yourself. Append native passes only while open, and call managed helpers outside any active pass.",
+                  "zh": "批次拥有 encoder 的结束与提交权：请勿自行对 batch.encoder 调用 finish() 或 device.queue.submit()。仅在 open 时追加原生 pass，且托管助手须在没有打开 pass 时调用。"
+                },
+                {
+                  "en": "Each managed dispatch receives an independent aligned parameter range and any required private scratch. Resources are pooled per device with bounded retained memory; submitted allocations are recycled only after GPU completion. Caller-owned storage outputs remain shared.",
+                  "zh": "每次托管 dispatch 获得独立对齐参数区间及所需私有 scratch。资源按设备池化，保留内存有上限；已提交分配仅在 GPU 完成后回收。调用方 storage 输出仍共享。"
+                }
+              ],
+              "errors": [
+                {
+                  "en": "Encoding or submitting after submit/cancel throws UsageError. cancel() on a submitted batch throws UsageError; cancel() on an already cancelled batch is idempotent.",
+                  "zh": "submit/cancel 后继续编码或提交抛 UsageError；对已提交批次调用 cancel() 抛 UsageError；对已取消批次重复 cancel() 幂等。"
+                }
+              ]
+            },
+            {
+              "name": "cancel",
+              "kind": "method",
+              "signature": "cancel(): void",
+              "description": {
+                "en": "Discard an open batch; repeated cancellation is idempotent.",
+                "zh": "丢弃 open 批次；重复取消幂等。"
+              },
+              "parameters": [],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "No return value.",
+                  "zh": "无返回值。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Cancellation discards encoded commands and managed allocations; it does not roll back external CPU writes, earlier submissions, or PingPong.swap().",
+                  "zh": "取消丢弃已编码命令与托管分配，不回滚外部 CPU 写入、此前提交或 PingPong.swap()。"
+                }
+              ],
+              "errors": [
+                {
+                  "en": "Encoding or submitting after submit/cancel throws UsageError. cancel() on a submitted batch throws UsageError; cancel() on an already cancelled batch is idempotent.",
+                  "zh": "submit/cancel 后继续编码或提交抛 UsageError；对已提交批次调用 cancel() 抛 UsageError；对已取消批次重复 cancel() 幂等。"
+                }
+              ]
+            }
+          ],
+          "constraints": [
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            },
+            {
+              "en": "The batch owns encoder completion and submission: never call encoder.finish() or device.queue.submit() for batch.encoder yourself. Append native passes only while open, and call managed helpers outside any active pass.",
+              "zh": "批次拥有 encoder 的结束与提交权：请勿自行对 batch.encoder 调用 finish() 或 device.queue.submit()。仅在 open 时追加原生 pass，且托管助手须在没有打开 pass 时调用。"
+            },
+            {
+              "en": "Encoding or submitting after submit/cancel throws UsageError. cancel() on a submitted batch throws UsageError; cancel() on an already cancelled batch is idempotent.",
+              "zh": "submit/cancel 后继续编码或提交抛 UsageError；对已提交批次调用 cancel() 抛 UsageError；对已取消批次重复 cancel() 幂等。"
+            },
+            {
+              "en": "Cancellation discards encoded commands and managed allocations; it does not roll back external CPU writes, earlier submissions, or PingPong.swap().",
+              "zh": "取消丢弃已编码命令与托管分配，不回滚外部 CPU 写入、此前提交或 PingPong.swap()。"
+            }
+          ]
+        },
+        {
+          "name": "typedElementKernel",
+          "kind": "function",
+          "signature": "typedElementKernel<const S extends ElementKernelSpec>(spec: S): TypedElementKernel<S>",
+          "description": {
+            "en": "Opt-in typed factory inferring exact resource names/kinds and uniform value shapes from a literal spec. Added in 2.1.0.",
+            "zh": "可选类型化工厂，从字面量 spec 推导精确资源名／kind 与 uniform 值。2.1.0 新增。"
+          },
+          "source": "src/core/typed-kernel.ts",
+          "parameters": [
+            {
+              "name": "spec",
+              "type": "S extends ElementKernelSpec",
+              "required": true,
+              "description": {
+                "en": "Same runtime descriptor as elementKernel. Preserve literal kinds with inline fields or as const when stored separately.",
+                "zh": "运行时描述符与 elementKernel 相同；内联字段或单独保存时用 as const 保留 kind 字面量。"
+              }
+            }
+          ],
+          "returns": {
+            "type": "TypedElementKernel<S>",
+            "description": {
+              "en": "ElementKernel lifecycle with inferred run/encode call arguments.",
+              "zh": "保留 ElementKernel 生命周期，并推导 run／encode 调用参数。"
+            }
+          },
+          "constraints": [
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            },
+            {
+              "en": "Every declared state/input/auxInputs name and Buffer kind is inferred. Uniform scalar/vector shapes follow KindOf, and declared uniforms are required. TypedElementKernelResources<S> and TypedElementKernelUniforms<S> expose the maps.",
+              "zh": "推导所有 state/input/auxInputs 名称与 Buffer kind；uniform 标量／向量遵循 KindOf，声明了 uniform 时调用必须提供。TypedElementKernelResources<S> 与 TypedElementKernelUniforms<S> 暴露映射。"
+            },
+            {
+              "en": "This opt-in interface does not tighten the original elementKernel or its broad Record calls, and does not type-check WGSL bodies. Runtime execution and validation reuse elementKernel.",
+              "zh": "此可选接口不收紧原 elementKernel 或宽泛 Record 调用，也不检查 WGSL 函数体。运行与校验复用 elementKernel。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "caption": {
+                "en": "20 typed PingPong steps with independent uniforms, count and auxInputs (2.1.0)",
+                "zh": "20 轮类型化 PingPong，独立 uniform、count 与 auxInputs（2.1.0）"
+              },
+              "code": "import { Buffer, PingPong, createBatch, typedElementKernel } from 'wgpu-kit';\n\nconst state = await PingPong.create({ value: 'f32' }, 6);\nconst weights = await Buffer.create('f32', 3);\nstate.current.value.write(new Float32Array([1, 2, 3, 4, 0, 0]));\nweights.write(new Float32Array([1, 2, 3]));\n\nconst step = typedElementKernel({\n  state: { next: 'f32' },\n  inputs: { previous: 'f32' },\n  auxInputs: { weights: 'f32' },\n  uniforms: { delta: 'f32' },\n  code: `fn userFn(i: u32, delta: f32) {\n    next[i] = previous[i] + weights[i % arrayLength(&weights)] * delta;\n  }`,\n});\nawait step.prepare();\nconst batch = await createBatch();\nfor (let iteration = 0; iteration < 20; iteration++) {\n  step.encode(batch.encoder, {\n    next: state.other.value,\n    previous: state.current.value,\n    weights,\n  }, { delta: iteration + 1 }, { count: 4, batch });\n  state.swap();\n}\nbatch.submit();\nconsole.log(Array.from(await state.current.value.read()));\n// [211, 422, 633, 214, 0, 0]\nstep.destroy(); state.destroy(); weights.destroy();"
+            }
+          ]
+        },
+        {
+          "name": "TypedElementKernel",
+          "kind": "type alias",
+          "signature": "export type TypedElementKernel<S extends ElementKernelSpec> = Omit<ElementKernel, 'run' | 'encode'> & { run(...args: DispatchArguments<S, ElementKernelDispatchOptions>): Promise<void>; encode(encoder: GPUCommandEncoder, ...args: DispatchArguments<S, ElementKernelEncodeOptions>): void; }",
+          "description": {
+            "en": "ElementKernel controller with spec-inferred resource/uniform arguments. DispatchArguments is an internal conditional tuple: declared uniforms are required; otherwise they may be omitted. Added in 2.1.0.",
+            "zh": "从 spec 推导资源／uniform 调用参数的 ElementKernel 控制器。DispatchArguments 是内部条件元组：声明 uniform 时必传，否则可省略。2.1.0 新增。"
+          },
+          "source": "src/core/typed-kernel.ts",
+          "constraints": [
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            },
+            {
+              "en": "Native path without options.batch: one nonzero encode per instance per submission, followed by endSubmit(). With options.batch, pass batch.encoder and submit only through batch.submit(); every encode has an independent uniform snapshot, repeated calls are supported, and the native guard is unchanged.",
+              "zh": "省略 options.batch 的原生路径：每实例每次提交只能进行一次非零 encode，提交后调用 endSubmit()。使用 options.batch 时传入 batch.encoder，且只能通过 batch.submit() 提交；每次编码都有独立 uniform 快照，支持重复调用，原生闸状态保持不变。"
+            }
+          ]
+        },
+        {
+          "name": "TypedElementKernelResources",
+          "kind": "type alias",
+          "signature": "export type TypedElementKernelResources<S extends ElementKernelSpec> = { readonly [K in keyof ResourceFields<S>]: Buffer<ResourceFields<S>[K] & ScalarKind>; };",
+          "description": {
+            "en": "ResourceFields<S> internally merges state, inputs and auxInputs. The public map preserves those names and Buffer kinds. Added in 2.1.0.",
+            "zh": "内部 ResourceFields<S> 合并 state、inputs、auxInputs；此公开映射保留资源名与 Buffer kind。2.1.0 新增。"
+          },
+          "source": "src/core/typed-kernel.ts",
+          "constraints": [
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            }
+          ]
+        },
+        {
+          "name": "TypedElementKernelUniforms",
+          "kind": "type alias",
+          "signature": "export type TypedElementKernelUniforms<S extends ElementKernelSpec> = { readonly [K in keyof Fields<S, 'uniforms'>]: KindOf<Fields<S, 'uniforms'>[K] & ScalarKind>; };",
+          "description": {
+            "en": "Map spec.uniforms to scalar numbers or Vec2/Vec3/Vec4 objects. Fields is an internal declaration helper. Does not type-check WGSL bodies. Added in 2.1.0.",
+            "zh": "将 spec.uniforms 映射为标量 number 或 Vec2／Vec3／Vec4 对象。Fields 是内部声明助手，不检查 WGSL 函数体。2.1.0 新增。"
+          },
+          "source": "src/core/typed-kernel.ts",
+          "constraints": [
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            }
+          ]
+        },
+        {
+          "name": "ElementKernelEncodeOptions",
+          "kind": "interface",
+          "signature": "export interface ElementKernelEncodeOptions extends ElementKernelDispatchOptions { batch?: ComputeBatch; }",
+          "description": {
+            "en": "Encode-only options: optional count plus a managed batch. run() retains ElementKernelDispatchOptions and accepts no batch. Added in 2.1.0.",
+            "zh": "仅 encode 接收的选项：可选 count 与托管 batch。run() 保留 ElementKernelDispatchOptions，不接收 batch。2.1.0 新增。"
+          },
+          "source": "src/core/kernel.ts",
+          "typeDetails": [
+            {
+              "name": "count",
+              "type": "number",
+              "required": false,
+              "default": {
+                "en": "First state/input buffer length",
+                "zh": "首个 state/input 缓冲长度"
+              },
+              "description": {
+                "en": "Integer 0..0xffffffff. Limits invocation indices to [0, count); every state/input capacity must be at least count. Auxiliary arrays have independent bounds.",
+                "zh": "0..0xffffffff 内整数。调用索引范围为 [0, count)，所有 state/input 容量须至少为 count。辅助数组具有独立边界。"
+              }
+            },
+            {
+              "name": "batch",
+              "type": "ComputeBatch",
+              "required": false,
+              "description": {
+                "en": "Open managed scope; use its encoder and submit() method. Supports repeated dispatches without touching the native guard.",
+                "zh": "open 的托管作用域；使用其 encoder 与 submit()。支持重复 dispatch，不改变原生闸。"
+              }
+            }
+          ],
+          "constraints": [
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            },
+            {
+              "en": "Native path without options.batch: one nonzero encode per instance per submission, followed by endSubmit(). With options.batch, pass batch.encoder and submit only through batch.submit(); every encode has an independent uniform snapshot, repeated calls are supported, and the native guard is unchanged.",
+              "zh": "省略 options.batch 的原生路径：每实例每次提交只能进行一次非零 encode，提交后调用 endSubmit()。使用 options.batch 时传入 batch.encoder，且只能通过 batch.submit() 提交；每次编码都有独立 uniform 快照，支持重复调用，原生闸状态保持不变。"
+            },
+            {
+              "en": "The batch owns encoder completion and submission: never call encoder.finish() or device.queue.submit() for batch.encoder yourself. Append native passes only while open, and call managed helpers outside any active pass.",
+              "zh": "批次拥有 encoder 的结束与提交权：请勿自行对 batch.encoder 调用 finish() 或 device.queue.submit()。仅在 open 时追加原生 pass，且托管助手须在没有打开 pass 时调用。"
             }
           ]
         },
         {
           "name": "PingPong",
           "kind": "class",
-          "signature": "export declare class PingPong<K extends string>",
+          "signature": "export class PingPong<K extends string, F extends Record<K, ScalarKind> = Record<K, ScalarKind>>",
           "description": {
             "en": "Two same-shaped buffer sets with explicit current/other ownership.",
             "zh": "两个形状一致的缓冲区集合，显式区分 current 与 other。"
           },
-          "source": "dist/core/pingpong.js",
+          "source": "src/core/pingpong.ts",
           "members": [
             {
               "name": "create",
               "kind": "method",
-              "signature": "static create<K extends string>(kinds: Record<K, ScalarKind>, length: number): Promise<PingPong<K>>",
+              "signature": [
+                "static create<const F extends string | Record<string, ScalarKind>>(kinds: Exclude<F, string>, length: number): Promise<CreateResult<F>>;",
+                "static create<K extends string>(kinds: Record<K, ScalarKind>, length: number): Promise<PingPong<K>>;"
+              ],
               "description": {
-                "en": "Allocate both sides with one Buffer per field.",
-                "zh": "两侧各为每个字段分配一个 Buffer。"
+                "en": "Allocate both sides. The internal CreateResult helper preserves Buffer kinds from an inferred literal kind map; the field-name overload preserves explicit string type arguments and generic wrappers. Typing enhancement in 2.1.0.",
+                "zh": "分配两侧。内部 CreateResult 助手使推导的字面量 kind 表保留 Buffer kind；字段名重载兼容显式字符串类型参数与泛型包装器。2.1.0 类型增强。"
               },
               "parameters": [
                 {
@@ -566,7 +913,7 @@
             {
               "name": "runWith",
               "kind": "method",
-              "signature": "runWith(fn: (write: Record<K, Buffer>, read: Record<K, Buffer>) => Promise<void>): Promise<void>",
+              "signature": "runWith(fn: (write: { [P in K]: Buffer<F[P]> }, read: { [P in K]: Buffer<F[P]> }) => Promise<void>): Promise<void>",
               "description": {
                 "en": "Await fn(other,current), then swap only after it resolves successfully.",
                 "zh": "等待 fn(other,current)；仅成功兑现后交换两侧。"
@@ -609,7 +956,7 @@
             {
               "name": "clone",
               "kind": "method",
-              "signature": "clone(): Promise<PingPong<K>>",
+              "signature": "clone(): Promise<PingPong<K, F>>",
               "description": {
                 "en": "Allocate a new group with the same kinds and length; values and active-side index are not copied.",
                 "zh": "分配具有相同类型和长度的新组；不会复制数据或活动侧索引。"
@@ -664,7 +1011,7 @@
           "typeDetails": [
             {
               "name": "current",
-              "type": "readonly Record<K, Buffer>",
+              "type": "{ [P in K]: Buffer<F[P]> } (readonly property)",
               "description": {
                 "en": "Current read/render side.",
                 "zh": "当前读／渲染侧。"
@@ -672,7 +1019,7 @@
             },
             {
               "name": "other",
-              "type": "readonly Record<K, Buffer>",
+              "type": "{ [P in K]: Buffer<F[P]> } (readonly property)",
               "description": {
                 "en": "Other write side.",
                 "zh": "另一写侧。"
@@ -695,6 +1042,12 @@
                 "en": "Example",
                 "zh": "示例"
               }
+            }
+          ],
+          "constraints": [
+            {
+              "en": "Typing enhancement in 2.1.0: literal create({ value: 'f32' }, count) preserves Buffer<'f32'> on current/other and clone(). Existing PingPong<K> annotations and explicit create<'value'> calls remain supported; these broader forms retain broad kinds.",
+              "zh": "2.1.0 类型增强：字面量 create({ value: 'f32' }, count) 在 current／other 与 clone() 中保留 Buffer<'f32'>。现有 PingPong<K> 标注及显式 create<'value'> 调用仍兼容，这些宽泛形式保留宽泛 kind。"
             }
           ]
         },
@@ -1933,7 +2286,7 @@
             "en": "Create a lazy u32 prefix-scan controller; no arguments.",
             "zh": "创建延迟准备的 u32 前缀扫描控制器；无参数。"
           },
-          "source": "dist/primitives/scan.js",
+          "source": "src/primitives/scan.ts",
           "parameters": [],
           "returns": {
             "type": "Scan",
@@ -1952,8 +2305,12 @@
               "zh": "count=0 不编码工作，也不启用检查锁。实现上限为 8192*65535 = 536862720 个值；分配／绑定／设备限制可能更低。"
             },
             {
-              "en": "One encode/sumInto per instance per submit; call endSubmit() after manual queue.submit(). resetEncodeGuard() permanently disables the check without fixing shared-uniform overwrite hazards.",
-              "zh": "每个实例每次提交只允许一次 encode／sumInto；手动 queue.submit() 后调用 endSubmit()。resetEncodeGuard() 永久关闭检查，但不会修复共享 uniform 被覆盖的风险。"
+              "en": "Native path without a batch: one encode/sumInto per instance per submit, followed by endSubmit(). Managed batch calls use independent uniforms/scratch, support repeated encoding, do not consume or reset the native guard, and need no endSubmit(). resetEncodeGuard() only disables the native check and does not fix shared-uniform overwrite hazards.",
+              "zh": "省略 batch 的原生路径：每个实例每次提交只能 encode／sumInto 一次，提交后调用 endSubmit()。托管批次使用独立 uniform／scratch，支持重复编码，不消耗或重置原生闸，也不需要 endSubmit()。resetEncodeGuard() 仅关闭原生检查，不能修复共享 uniform 覆盖风险。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
             }
           ],
           "examples": [
@@ -1983,7 +2340,7 @@
             "en": "Prefix-scan lifecycle and composition contract.",
             "zh": "前缀扫描生命周期与组合契约。"
           },
-          "source": "dist/primitives/scan.js",
+          "source": "src/primitives/scan.ts",
           "members": [
             {
               "name": "prepare",
@@ -2015,7 +2372,7 @@
             {
               "name": "encode",
               "kind": "method",
-              "signature": "encode(encoder: GPUCommandEncoder, src: GPUBuffer, dst: GPUBuffer, count: number, exclusive?: boolean): void",
+              "signature": "encode(encoder: GPUCommandEncoder, src: GPUBuffer, dst: GPUBuffer, count: number, exclusive?: boolean, batch?: ComputeBatch): void",
               "description": {
                 "en": "Encode one or three compute passes depending on count; no submit/readback.",
                 "zh": "根据 count 编码一个或三个计算 pass；不提交、不读回。"
@@ -2066,6 +2423,15 @@
                     "zh": "true：dst[i]=sum(src[0..i))；false：dst[i]=sum(src[0..i])。"
                   },
                   "default": "true"
+                },
+                {
+                  "name": "batch",
+                  "type": "ComputeBatch",
+                  "required": false,
+                  "description": {
+                    "en": "Optional managed scope; encoder must equal batch.encoder. Independent per-call uniforms/scratch support repeated calls without endSubmit(). The batch owns submission.",
+                    "zh": "可选托管作用域；encoder 须为 batch.encoder。每次调用参数／scratch 独立，支持重复调用且无需 endSubmit()，由批次拥有提交权。"
+                  }
                 }
               ],
               "returns": {
@@ -2079,6 +2445,10 @@
                 {
                   "en": "ERR_USAGE before prepare(), for a repeated guarded encode, invalid count, or count above 536862720. Primitive shader errors use UsageError with code ERR_COMPILE; native WebGPU validation may also fail.",
                   "zh": "prepare 前调用、重复受检查 encode、非法 count 或超过 536862720 时为 ERR_USAGE。原语着色器错误使用代码为 ERR_COMPILE 的 UsageError；原生 WebGPU 校验也可能失败。"
+                },
+                {
+                  "en": "UsageError for a closed batch or an encoder that does not belong to it.",
+                  "zh": "批次已关闭或 encoder 不属于该批次时抛 UsageError。"
                 }
               ],
               "examples": [
@@ -2089,6 +2459,12 @@
                     "en": "Example",
                     "zh": "示例"
                   }
+                }
+              ],
+              "constraints": [
+                {
+                  "en": "Managed encoding does not snapshot caller-owned output buffers. Consume a shared destination before a later dispatch overwrites it.",
+                  "zh": "托管编码不会为调用方输出缓冲创建快照；共享目标必须在后续 dispatch 覆盖前消费。"
                 }
               ]
             },
@@ -2168,8 +2544,8 @@
               "kind": "method",
               "signature": "endSubmit(): void",
               "description": {
-                "en": "Clear the once-per-submit check after manual submission.",
-                "zh": "在手动提交后清除单次提交检查。"
+                "en": "Reset the native encode-once guard after the caller submits. Managed batch calls do not use or reset this guard.",
+                "zh": "调用方原生提交后重置 encode-once 闸；托管批次不使用或重置该闸。"
               },
               "parameters": [],
               "returns": {
@@ -2195,8 +2571,8 @@
               "kind": "method",
               "signature": "resetEncodeGuard(): void",
               "description": {
-                "en": "Permanently disable the once-per-submit check on this instance.",
-                "zh": "永久关闭该实例的单次提交检查。"
+                "en": "Permanently disable the native guard; this does not provide independent uniforms. Use a managed batch for repeatable parameter snapshots.",
+                "zh": "永久关闭原生闸，不会获得独立 uniform；需要重复参数快照时可使用托管批次。"
               },
               "parameters": [],
               "returns": {
@@ -2208,8 +2584,8 @@
               },
               "constraints": [
                 {
-                  "en": "One encode/sumInto per instance per submit; call endSubmit() after manual queue.submit(). resetEncodeGuard() permanently disables the check without fixing shared-uniform overwrite hazards.",
-                  "zh": "每个实例每次提交只允许一次 encode／sumInto；手动 queue.submit() 后调用 endSubmit()。resetEncodeGuard() 永久关闭检查，但不会修复共享 uniform 被覆盖的风险。"
+                  "en": "Native path without a batch: one encode/sumInto per instance per submit, followed by endSubmit(). Managed batch calls use independent uniforms/scratch, support repeated encoding, do not consume or reset the native guard, and need no endSubmit(). resetEncodeGuard() only disables the native check and does not fix shared-uniform overwrite hazards.",
+                  "zh": "省略 batch 的原生路径：每个实例每次提交只能 encode／sumInto 一次，提交后调用 endSubmit()。托管批次使用独立 uniform／scratch，支持重复编码，不消耗或重置原生闸，也不需要 endSubmit()。resetEncodeGuard() 仅关闭原生检查，不能修复共享 uniform 覆盖风险。"
                 }
               ],
               "examples": [
@@ -2261,8 +2637,12 @@
               "zh": "count=0 不编码工作，也不启用检查锁。实现上限为 8192*65535 = 536862720 个值；分配／绑定／设备限制可能更低。"
             },
             {
-              "en": "One encode/sumInto per instance per submit; call endSubmit() after manual queue.submit(). resetEncodeGuard() permanently disables the check without fixing shared-uniform overwrite hazards.",
-              "zh": "每个实例每次提交只允许一次 encode／sumInto；手动 queue.submit() 后调用 endSubmit()。resetEncodeGuard() 永久关闭检查，但不会修复共享 uniform 被覆盖的风险。"
+              "en": "Native path without a batch: one encode/sumInto per instance per submit, followed by endSubmit(). Managed batch calls use independent uniforms/scratch, support repeated encoding, do not consume or reset the native guard, and need no endSubmit(). resetEncodeGuard() only disables the native check and does not fix shared-uniform overwrite hazards.",
+              "zh": "省略 batch 的原生路径：每个实例每次提交只能 encode／sumInto 一次，提交后调用 endSubmit()。托管批次使用独立 uniform／scratch，支持重复编码，不消耗或重置原生闸，也不需要 endSubmit()。resetEncodeGuard() 仅关闭原生检查，不能修复共享 uniform 覆盖风险。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
             }
           ],
           "examples": [
@@ -2284,7 +2664,7 @@
             "en": "Create a lazy u32 sum-reduction controller; no arguments.",
             "zh": "创建延迟准备的 u32 求和归约控制器；无参数。"
           },
-          "source": "dist/primitives/reduce.js",
+          "source": "src/primitives/reduce.ts",
           "parameters": [],
           "returns": {
             "type": "Reduce",
@@ -2307,8 +2687,12 @@
               "zh": "最大 count 为 256*32*65535 = 536862720；设备／绑定／内存限制可能使实际最大值更小。"
             },
             {
-              "en": "One encode/sumInto per instance per submit; call endSubmit() after manual queue.submit(). resetEncodeGuard() permanently disables the check without fixing shared-uniform overwrite hazards.",
-              "zh": "每个实例每次提交只允许一次 encode／sumInto；手动 queue.submit() 后调用 endSubmit()。resetEncodeGuard() 永久关闭检查，但不会修复共享 uniform 被覆盖的风险。"
+              "en": "Native path without a batch: one encode/sumInto per instance per submit, followed by endSubmit(). Managed batch calls use independent uniforms/scratch, support repeated encoding, do not consume or reset the native guard, and need no endSubmit(). resetEncodeGuard() only disables the native check and does not fix shared-uniform overwrite hazards.",
+              "zh": "省略 batch 的原生路径：每个实例每次提交只能 encode／sumInto 一次，提交后调用 endSubmit()。托管批次使用独立 uniform／scratch，支持重复编码，不消耗或重置原生闸，也不需要 endSubmit()。resetEncodeGuard() 仅关闭原生检查，不能修复共享 uniform 覆盖风险。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
             }
           ],
           "examples": [
@@ -2338,7 +2722,7 @@
             "en": "Reduction lifecycle and composition contract.",
             "zh": "归约生命周期与组合契约。"
           },
-          "source": "dist/primitives/reduce.js",
+          "source": "src/primitives/reduce.ts",
           "members": [
             {
               "name": "prepare",
@@ -2370,7 +2754,7 @@
             {
               "name": "sumInto",
               "kind": "method",
-              "signature": "sumInto(encoder: GPUCommandEncoder, src: GPUBuffer, count: number, dst: GPUBuffer): void",
+              "signature": "sumInto(encoder: GPUCommandEncoder, src: GPUBuffer, count: number, dst: GPUBuffer, batch?: ComputeBatch): void",
               "description": {
                 "en": "Record clear/reduction passes; result stays on GPU in dst[0].",
                 "zh": "记录清零／归约 pass；结果保留在 GPU 的 dst[0]。"
@@ -2411,6 +2795,15 @@
                     "en": "Writable storage buffer whose first u32 is treated as atomic<u32> by the shader.",
                     "zh": "可写存储缓冲区，其首个 u32 在着色器中作为 atomic<u32> 使用。"
                   }
+                },
+                {
+                  "name": "batch",
+                  "type": "ComputeBatch",
+                  "required": false,
+                  "description": {
+                    "en": "Optional managed scope; encoder must equal batch.encoder. Independent per-call uniforms/scratch support repeated calls without endSubmit(). The batch owns submission.",
+                    "zh": "可选托管作用域；encoder 须为 batch.encoder。每次调用参数／scratch 独立，支持重复调用且无需 endSubmit()，由批次拥有提交权。"
+                  }
                 }
               ],
               "returns": {
@@ -2424,6 +2817,10 @@
                 {
                   "en": "ERR_USAGE before prepare(), repeated guarded sumInto(), invalid count or count beyond the dispatch cap. Shader compilation errors use UsageError / ERR_COMPILE. Readback/map failures may reject sum().",
                   "zh": "prepare 前调用、重复受检查 sumInto()、非法 count 或超出 dispatch 上限时为 ERR_USAGE。着色器编译错误为 UsageError / ERR_COMPILE。读回／映射失败可能拒绝 sum()。"
+                },
+                {
+                  "en": "UsageError for a closed batch or an encoder that does not belong to it.",
+                  "zh": "批次已关闭或 encoder 不属于该批次时抛 UsageError。"
                 }
               ],
               "examples": [
@@ -2434,6 +2831,12 @@
                     "en": "Example",
                     "zh": "示例"
                   }
+                }
+              ],
+              "constraints": [
+                {
+                  "en": "Managed encoding does not snapshot caller-owned output buffers. Consume a shared destination before a later dispatch overwrites it.",
+                  "zh": "托管编码不会为调用方输出缓冲创建快照；共享目标必须在后续 dispatch 覆盖前消费。"
                 }
               ]
             },
@@ -2494,8 +2897,8 @@
               "kind": "method",
               "signature": "endSubmit(): void",
               "description": {
-                "en": "Reset the guarded-encode state after manual submission.",
-                "zh": "手动提交后重置编码检查状态。"
+                "en": "Reset the native encode-once guard after the caller submits. Managed batch calls do not use or reset this guard.",
+                "zh": "调用方原生提交后重置 encode-once 闸；托管批次不使用或重置该闸。"
               },
               "parameters": [],
               "returns": {
@@ -2521,8 +2924,8 @@
               "kind": "method",
               "signature": "resetEncodeGuard(): void",
               "description": {
-                "en": "Permanently disable the guard; caller accepts shared-parameter hazards.",
-                "zh": "永久关闭检查；调用方承担共享参数风险。"
+                "en": "Permanently disable the native guard; this does not provide independent uniforms. Use a managed batch for repeatable parameter snapshots.",
+                "zh": "永久关闭原生闸，不会获得独立 uniform；需要重复参数快照时可使用托管批次。"
               },
               "parameters": [],
               "returns": {
@@ -2534,8 +2937,8 @@
               },
               "constraints": [
                 {
-                  "en": "One encode/sumInto per instance per submit; call endSubmit() after manual queue.submit(). resetEncodeGuard() permanently disables the check without fixing shared-uniform overwrite hazards.",
-                  "zh": "每个实例每次提交只允许一次 encode／sumInto；手动 queue.submit() 后调用 endSubmit()。resetEncodeGuard() 永久关闭检查，但不会修复共享 uniform 被覆盖的风险。"
+                  "en": "Native path without a batch: one encode/sumInto per instance per submit, followed by endSubmit(). Managed batch calls use independent uniforms/scratch, support repeated encoding, do not consume or reset the native guard, and need no endSubmit(). resetEncodeGuard() only disables the native check and does not fix shared-uniform overwrite hazards.",
+                  "zh": "省略 batch 的原生路径：每个实例每次提交只能 encode／sumInto 一次，提交后调用 endSubmit()。托管批次使用独立 uniform／scratch，支持重复编码，不消耗或重置原生闸，也不需要 endSubmit()。resetEncodeGuard() 仅关闭原生检查，不能修复共享 uniform 覆盖风险。"
                 }
               ],
               "examples": [
@@ -2591,8 +2994,12 @@
               "zh": "最大 count 为 256*32*65535 = 536862720；设备／绑定／内存限制可能使实际最大值更小。"
             },
             {
-              "en": "One encode/sumInto per instance per submit; call endSubmit() after manual queue.submit(). resetEncodeGuard() permanently disables the check without fixing shared-uniform overwrite hazards.",
-              "zh": "每个实例每次提交只允许一次 encode／sumInto；手动 queue.submit() 后调用 endSubmit()。resetEncodeGuard() 永久关闭检查，但不会修复共享 uniform 被覆盖的风险。"
+              "en": "Native path without a batch: one encode/sumInto per instance per submit, followed by endSubmit(). Managed batch calls use independent uniforms/scratch, support repeated encoding, do not consume or reset the native guard, and need no endSubmit(). resetEncodeGuard() only disables the native check and does not fix shared-uniform overwrite hazards.",
+              "zh": "省略 batch 的原生路径：每个实例每次提交只能 encode／sumInto 一次，提交后调用 endSubmit()。托管批次使用独立 uniform／scratch，支持重复编码，不消耗或重置原生闸，也不需要 endSubmit()。resetEncodeGuard() 仅关闭原生检查，不能修复共享 uniform 覆盖风险。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
             }
           ],
           "examples": [
@@ -3330,7 +3737,7 @@
             "en": "Controller returned by elementKernel.",
             "zh": "elementKernel 返回的控制器。"
           },
-          "source": "dist/core/kernel.js",
+          "source": "src/core/kernel.ts",
           "members": [
             {
               "name": "prepare",
@@ -3368,10 +3775,10 @@
             {
               "name": "run",
               "kind": "method",
-              "signature": "run(resources: Record<string, Buffer>, uniforms?: Record<string, UniformValue>): Promise<void>",
+              "signature": "run(resources: Record<string, Buffer>, uniforms?: Record<string, UniformValue>, options?: ElementKernelDispatchOptions): Promise<void>",
               "description": {
-                "en": "Convenience prepare → encode → queue.submit; resets the encode guard after submission.",
-                "zh": "便捷执行 prepare → encode → queue.submit，并在提交后重置 encode 检查。"
+                "en": "Convenience prepare → encode → queue.submit; resets the encode guard after a nonzero submission. Zero count validates the call and leaves the guard unchanged.",
+                "zh": "便捷执行 prepare → encode → queue.submit；非零提交后重置 encode 检查。零 count 完整校验调用并保留原检查状态。"
               },
               "parameters": [
                 {
@@ -3379,8 +3786,8 @@
                   "type": "Record<string, Buffer>",
                   "required": true,
                   "description": {
-                    "en": "Map every declared state/input field to a matching, equal-length Buffer.",
-                    "zh": "将每个已声明 state/input 字段映射到类型匹配且等长的 Buffer。"
+                    "en": "Map every declared state/input/auxInputs field to a Buffer of the declared kind on the shared device. Count and capacity rules are controlled by options.",
+                    "zh": "将每个声明的 state/input/auxInputs 字段映射到类型匹配且属于共享设备的 Buffer。数量与容量规则由 options 控制。"
                   }
                 },
                 {
@@ -3392,19 +3799,33 @@
                     "zh": "全部已声明 uniform 的值。向量使用 {x,y,z,w} 对象，须包含类型所要求的分量。"
                   },
                   "default": "{}"
+                },
+                {
+                  "name": "options",
+                  "type": "ElementKernelDispatchOptions",
+                  "required": false,
+                  "default": "{}",
+                  "description": {
+                    "en": "Optional invocation count. Without count, state/inputs must be equal-length. An explicit count permits different capacities of at least count; auxInputs are independent. Pass undefined for uniforms when none are declared.",
+                    "zh": "可选调用数量。省略 count 时 state/inputs 须等长；显式 count 允许不同容量，但均须至少容纳 count 个元素。auxInputs 长度独立。无 uniform 声明时第二个参数传 undefined。"
+                  }
                 }
               ],
               "returns": {
                 "type": "Promise<void>",
                 "description": {
-                  "en": "Submission completed on the CPU; does not await completion of GPU work.",
-                  "zh": "CPU 侧已提交；不等待 GPU 工作完成。"
+                  "en": "After a nonzero call, work has been submitted on the CPU; it does not await GPU completion. Zero count resolves after validation without a submission.",
+                  "zh": "非零调用在 CPU 侧提交后兑现，不等待 GPU 完成。零 count 在校验后兑现，不提交。"
                 }
               },
               "errors": [
                 {
-                  "en": "ERR_USAGE before prepare() or for a second encode on this instance before a submission/reset. ERR_RESOURCE_MISSING, ERR_RESOURCE_TYPE or ERR_RESOURCE_LENGTH identify bad resources. ERR_UNIFORM_FIELD/ERR_UNIFORM_UNSUPPORTED come from uniform packing.",
-                  "zh": "未 prepare() 或同一实例在一次提交／重置前第二次 encode 时为 ERR_USAGE。资源错误对应 ERR_RESOURCE_MISSING、ERR_RESOURCE_TYPE、ERR_RESOURCE_LENGTH。uniform 打包错误对应 ERR_UNIFORM_FIELD／ERR_UNIFORM_UNSUPPORTED。"
+                  "en": "ERR_USAGE before prepare(), for a repeated native encode before submission/reset, or for a closed/mismatched managed batch. ERR_RESOURCE_MISSING, ERR_RESOURCE_TYPE and ERR_RESOURCE_LENGTH identify bad resources. Uniform packing reports ERR_UNIFORM_FIELD/ERR_UNIFORM_UNSUPPORTED. Shared-device resource ownership is a caller precondition.",
+                  "zh": "未 prepare()、原生路径提交／重置前重复编码，或托管批次已关闭／不匹配时为 ERR_USAGE。资源错误对应 ERR_RESOURCE_MISSING、ERR_RESOURCE_TYPE、ERR_RESOURCE_LENGTH；uniform 打包报告 ERR_UNIFORM_FIELD／ERR_UNIFORM_UNSUPPORTED。资源须属于共享设备是调用方前提。"
+                },
+                {
+                  "en": "UsageError also rejects invalid counts, a count beyond the device dispatch limit, or insufficient state/input capacity. All declared resources and uniform values are checked even when count is zero.",
+                  "zh": "count 非法、超出设备 dispatch 上限或 state/input 容量不足时也抛出 UsageError。count 为零仍校验全部声明资源与 uniform 值。"
                 }
               ],
               "examples": [
@@ -3416,15 +3837,33 @@
                     "zh": "示例"
                   }
                 }
+              ],
+              "constraints": [
+                {
+                  "en": "Without options.count, state and inputs must have equal lengths and the first such buffer determines the invocation count. At least one state or inputs field is required; auxInputs do not determine the count.",
+                  "zh": "省略 options.count 时，state 与 inputs 必须等长，调用数量取首个此类缓冲长度。至少需要一个 state 或 inputs 字段；auxInputs 不参与数量推导。"
+                },
+                {
+                  "en": "An explicit count must be an integer in 0..0xffffffff. State/input lengths may differ, but every such buffer must contain at least count elements. In either mode, ceil(count / workgroupSize) must not exceed device.limits.maxComputeWorkgroupsPerDimension.",
+                  "zh": "显式 count 须为 0..0xffffffff 内的整数。state/input 可不同长，但每个缓冲都必须至少容纳 count 个元素。两种模式下，ceil(count / workgroupSize) 均不得超过 device.limits.maxComputeWorkgroupsPerDimension。"
+                },
+                {
+                  "en": "Auxiliary arrays are read-only and may have independent lengths. They do not participate in per-element capacity checks; auxiliary indexing bounds are the WGSL author's responsibility. Query their lengths with arrayLength(&weights).",
+                  "zh": "辅助数组只读且长度独立，不参与逐元素容量校验；辅助索引边界由 WGSL 作者负责。可用 arrayLength(&weights) 查询长度。"
+                },
+                {
+                  "en": "count: 0 validates all resources, uniforms and options, then performs no encoding or submission. It neither consumes nor clears an existing encode-once guard.",
+                  "zh": "count: 0 完整校验全部资源、uniform 与选项后，不编码、不提交，也不消耗或清除已有的 encode-once 检查状态。"
+                }
               ]
             },
             {
               "name": "encode",
               "kind": "method",
-              "signature": "encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms?: Record<string, UniformValue>): void",
+              "signature": "encode(encoder: GPUCommandEncoder, resources: Record<string, Buffer>, uniforms?: Record<string, UniformValue>, options?: ElementKernelEncodeOptions): void",
               "description": {
-                "en": "Encode a compute pass; uniforms are written immediately with queue.writeBuffer.",
-                "zh": "编码一个计算 pass；uniform 会立即通过 queue.writeBuffer 写入。"
+                "en": "Encode a nonzero dispatch without submitting. Without a batch, use the native shared-uniform guard. With a batch, capture an independent uniform snapshot. Zero count validates without encoding or changing the native guard.",
+                "zh": "编码非零 dispatch，不提交。省略 batch 时使用原生共享 uniform 闸；传入 batch 时保存独立 uniform 快照。零 count 仅校验，不编码或改变原生闸。"
               },
               "parameters": [
                 {
@@ -3432,8 +3871,8 @@
                   "type": "GPUCommandEncoder",
                   "required": true,
                   "description": {
-                    "en": "Caller-owned encoder from the same device; this API records work without submitting it.",
-                    "zh": "来自同一设备的调用方编码器；此 API 只记录工作，不提交。"
+                    "en": "Unfinished encoder from the shared device with no active pass. With options.batch this must be batch.encoder; batch.submit() owns finishing/submission.",
+                    "zh": "来自共享设备、没有打开 pass 的未完成 encoder。传入 options.batch 时须为 batch.encoder，由 batch.submit() 结束并提交。"
                   }
                 },
                 {
@@ -3441,8 +3880,8 @@
                   "type": "Record<string, Buffer>",
                   "required": true,
                   "description": {
-                    "en": "Map every declared state/input field to a matching, equal-length Buffer.",
-                    "zh": "将每个已声明 state/input 字段映射到类型匹配且等长的 Buffer。"
+                    "en": "Map every declared state/input/auxInputs field to a Buffer of the declared kind on the shared device. Count and capacity rules are controlled by options.",
+                    "zh": "将每个声明的 state/input/auxInputs 字段映射到类型匹配且属于共享设备的 Buffer。数量与容量规则由 options 控制。"
                   }
                 },
                 {
@@ -3454,6 +3893,16 @@
                     "zh": "全部已声明 uniform 的值。向量使用 {x,y,z,w} 对象，须包含类型所要求的分量。"
                   },
                   "default": "{}"
+                },
+                {
+                  "name": "options",
+                  "type": "ElementKernelEncodeOptions",
+                  "required": false,
+                  "default": "{}",
+                  "description": {
+                    "en": "Optional count and managed batch. Count follows run() capacity rules. A batch allows repeated dispatches with independent parameters and owns submission; run() itself accepts no batch option.",
+                    "zh": "可选 count 与托管 batch。count 遵循 run() 容量规则；batch 提供独立参数以支持重复 dispatch，并拥有提交权；run() 自身不接收 batch 选项。"
+                  }
                 }
               ],
               "returns": {
@@ -3465,14 +3914,34 @@
               },
               "constraints": [
                 {
-                  "en": "One encode per kernel instance per submission. After queue.submit(), call endSubmit(). Use different instances for multiple independently parameterized dispatches in one submission.",
-                  "zh": "每个内核实例每次提交只能 encode 一次。queue.submit() 后调用 endSubmit()。同次提交的多组独立参数 dispatch 应使用不同实例。"
+                  "en": "Native path without options.batch: one nonzero encode per instance per submission, followed by endSubmit(). With options.batch, pass batch.encoder and submit only through batch.submit(); every encode has an independent uniform snapshot, repeated calls are supported, and the native guard is unchanged.",
+                  "zh": "省略 options.batch 的原生路径：每实例每次提交只能进行一次非零 encode，提交后调用 endSubmit()。使用 options.batch 时传入 batch.encoder，且只能通过 batch.submit() 提交；每次编码都有独立 uniform 快照，支持重复调用，原生闸状态保持不变。"
+                },
+                {
+                  "en": "Without options.count, state and inputs must have equal lengths and the first such buffer determines the invocation count. At least one state or inputs field is required; auxInputs do not determine the count.",
+                  "zh": "省略 options.count 时，state 与 inputs 必须等长，调用数量取首个此类缓冲长度。至少需要一个 state 或 inputs 字段；auxInputs 不参与数量推导。"
+                },
+                {
+                  "en": "An explicit count must be an integer in 0..0xffffffff. State/input lengths may differ, but every such buffer must contain at least count elements. In either mode, ceil(count / workgroupSize) must not exceed device.limits.maxComputeWorkgroupsPerDimension.",
+                  "zh": "显式 count 须为 0..0xffffffff 内的整数。state/input 可不同长，但每个缓冲都必须至少容纳 count 个元素。两种模式下，ceil(count / workgroupSize) 均不得超过 device.limits.maxComputeWorkgroupsPerDimension。"
+                },
+                {
+                  "en": "Auxiliary arrays are read-only and may have independent lengths. They do not participate in per-element capacity checks; auxiliary indexing bounds are the WGSL author's responsibility. Query their lengths with arrayLength(&weights).",
+                  "zh": "辅助数组只读且长度独立，不参与逐元素容量校验；辅助索引边界由 WGSL 作者负责。可用 arrayLength(&weights) 查询长度。"
+                },
+                {
+                  "en": "count: 0 validates all resources, uniforms and options, then performs no encoding or submission. It neither consumes nor clears an existing encode-once guard.",
+                  "zh": "count: 0 完整校验全部资源、uniform 与选项后，不编码、不提交，也不消耗或清除已有的 encode-once 检查状态。"
                 }
               ],
               "errors": [
                 {
-                  "en": "ERR_USAGE before prepare() or for a second encode on this instance before a submission/reset. ERR_RESOURCE_MISSING, ERR_RESOURCE_TYPE or ERR_RESOURCE_LENGTH identify bad resources. ERR_UNIFORM_FIELD/ERR_UNIFORM_UNSUPPORTED come from uniform packing.",
-                  "zh": "未 prepare() 或同一实例在一次提交／重置前第二次 encode 时为 ERR_USAGE。资源错误对应 ERR_RESOURCE_MISSING、ERR_RESOURCE_TYPE、ERR_RESOURCE_LENGTH。uniform 打包错误对应 ERR_UNIFORM_FIELD／ERR_UNIFORM_UNSUPPORTED。"
+                  "en": "ERR_USAGE before prepare(), for a repeated native encode before submission/reset, or for a closed/mismatched managed batch. ERR_RESOURCE_MISSING, ERR_RESOURCE_TYPE and ERR_RESOURCE_LENGTH identify bad resources. Uniform packing reports ERR_UNIFORM_FIELD/ERR_UNIFORM_UNSUPPORTED. Shared-device resource ownership is a caller precondition.",
+                  "zh": "未 prepare()、原生路径提交／重置前重复编码，或托管批次已关闭／不匹配时为 ERR_USAGE。资源错误对应 ERR_RESOURCE_MISSING、ERR_RESOURCE_TYPE、ERR_RESOURCE_LENGTH；uniform 打包报告 ERR_UNIFORM_FIELD／ERR_UNIFORM_UNSUPPORTED。资源须属于共享设备是调用方前提。"
+                },
+                {
+                  "en": "UsageError also rejects invalid counts, a count beyond the device dispatch limit, or insufficient state/input capacity. All declared resources and uniform values are checked even when count is zero.",
+                  "zh": "count 非法、超出设备 dispatch 上限或 state/input 容量不足时也抛出 UsageError。count 为零仍校验全部声明资源与 uniform 值。"
                 }
               ],
               "examples": [
@@ -3491,8 +3960,8 @@
               "kind": "method",
               "signature": "endSubmit(): void",
               "description": {
-                "en": "Clear the encode-once check after the caller submits its command buffer. Does not submit or wait.",
-                "zh": "在调用方提交命令缓冲区后清除单次 encode 检查；自身不提交，也不等待。"
+                "en": "Clear the native encode-once guard after a caller-owned submission. Does not submit or wait. Managed encoding neither needs this call nor changes the guard.",
+                "zh": "调用方原生提交后清除 encode-once 闸；不提交，也不等待。托管编码无需调用，也不会改变该闸。"
               },
               "parameters": [],
               "returns": {
@@ -3518,8 +3987,8 @@
               "kind": "method",
               "signature": "resetEncodeGuard(): void",
               "description": {
-                "en": "Permanently disable the guard on this instance; this is not just a one-frame reset.",
-                "zh": "永久关闭该实例的检查，并非仅重置一帧。"
+                "en": "Permanently disable the native guard on this instance; managed batch encoding is already repeatable without this escape hatch.",
+                "zh": "永久关闭该实例的原生闸；托管批次本身已支持重复编码，无需此逃生接口。"
               },
               "parameters": [],
               "returns": {
@@ -3531,8 +4000,8 @@
               },
               "constraints": [
                 {
-                  "en": "Advanced escape hatch: repeated encodes still share one uniform buffer and can see overwritten values. No corresponding enable method exists.",
-                  "zh": "高级底层接口：重复编码仍共享一个 uniform 缓冲区，可能读取被覆盖的值；没有对应重新启用方法。"
+                  "en": "Without a batch, repeated encodes still share a uniform buffer and may see overwritten values. No corresponding enable method exists.",
+                  "zh": "省略 batch 时，重复编码仍共享 uniform，可能读取被覆盖的值；没有对应的重新启用方法。"
                 }
               ],
               "examples": [
@@ -3657,12 +4126,32 @@
           ],
           "constraints": [
             {
-              "en": "All declared state/input buffers must be present, have the declared kind, share one device, and have the same element length. Even statically unused declared fields are checked. Extra resource/uniform keys are ignored.",
-              "zh": "所有声明的 state/input 缓冲区必须存在、类型匹配、使用同一设备且元素长度相同；即使静态未使用的声明字段也会校验。额外资源／uniform 键被忽略。"
+              "en": "New in 2.1.0: auxInputs, options.count and ElementKernelDispatchOptions are documented from src/core/kernel.ts and src/index.ts; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：auxInputs、options.count 与 ElementKernelDispatchOptions 依据 src/core/kernel.ts 和 src/index.ts 记录，在 npm 2.0.0 历史审计基线之上扩展。"
             },
             {
-              "en": "Field names must be unique across state, inputs and uniforms. The uniform name count is reserved and automatically injected. Use valid WGSL identifiers; the compiler checks reserved words.",
-              "zh": "字段名在 state、inputs、uniforms 之间必须唯一。uniform 名 count 为保留名称，由库自动注入。应使用有效 WGSL 标识符，保留字由编译器检查。"
+              "en": "All declared state/input/auxInputs buffers must be present and have the declared kind, including statically unused fields. Bound resources must belong to the shared device. Extra resource/uniform keys are ignored.",
+              "zh": "所有声明的 state/input/auxInputs 缓冲必须存在且类型匹配，包括静态未使用的字段。参与绑定的资源须属于共享设备。额外资源／uniform 键被忽略。"
+            },
+            {
+              "en": "Without options.count, state and inputs must have equal lengths and the first such buffer determines the invocation count. At least one state or inputs field is required; auxInputs do not determine the count.",
+              "zh": "省略 options.count 时，state 与 inputs 必须等长，调用数量取首个此类缓冲长度。至少需要一个 state 或 inputs 字段；auxInputs 不参与数量推导。"
+            },
+            {
+              "en": "An explicit count must be an integer in 0..0xffffffff. State/input lengths may differ, but every such buffer must contain at least count elements. In either mode, ceil(count / workgroupSize) must not exceed device.limits.maxComputeWorkgroupsPerDimension.",
+              "zh": "显式 count 须为 0..0xffffffff 内的整数。state/input 可不同长，但每个缓冲都必须至少容纳 count 个元素。两种模式下，ceil(count / workgroupSize) 均不得超过 device.limits.maxComputeWorkgroupsPerDimension。"
+            },
+            {
+              "en": "Auxiliary arrays are read-only and may have independent lengths. They do not participate in per-element capacity checks; auxiliary indexing bounds are the WGSL author's responsibility. Query their lengths with arrayLength(&weights).",
+              "zh": "辅助数组只读且长度独立，不参与逐元素容量校验；辅助索引边界由 WGSL 作者负责。可用 arrayLength(&weights) 查询长度。"
+            },
+            {
+              "en": "count: 0 validates all resources, uniforms and options, then performs no encoding or submission. It neither consumes nor clears an existing encode-once guard.",
+              "zh": "count: 0 完整校验全部资源、uniform 与选项后，不编码、不提交，也不消耗或清除已有的 encode-once 检查状态。"
+            },
+            {
+              "en": "Field names must be unique across state, inputs, auxInputs and uniforms. The uniform name count is reserved and automatically injected. Use valid WGSL identifiers; the compiler checks reserved words.",
+              "zh": "字段名在 state、inputs、auxInputs、uniforms 之间必须唯一。uniform 名 count 为保留名称，由库自动注入。应使用有效 WGSL 标识符，保留字由编译器检查。"
             },
             {
               "en": "Do not read neighboring elements from a buffer being concurrently written in the same dispatch; use separate input/output buffers or PingPong. The library does not provide global synchronization inside a dispatch.",
@@ -3671,6 +4160,10 @@
             {
               "en": "The generated source uses lexical resource-use analysis; shadowing a resource name with a local variable is a known analysis limitation.",
               "zh": "生成源码使用词法资源使用分析；局部变量遮蔽资源名是已知分析限制。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
             }
           ],
           "examples": [
@@ -3689,6 +4182,14 @@
                 "en": "Example",
                 "zh": "示例"
               }
+            },
+            {
+              "language": "typescript",
+              "caption": {
+                "en": "Independent auxiliary length and an explicit buffer prefix (new in 2.1.0)",
+                "zh": "独立辅助长度与显式缓冲前缀（2.1.0 新增）"
+              },
+              "code": "import { Buffer, elementKernel } from 'wgpu-kit';\nimport type { ElementKernelDispatchOptions } from 'wgpu-kit';\n\nconst output = await Buffer.create('f32', 6);\nconst source = await Buffer.create('f32', 4);\nconst weights = await Buffer.create('f32', 3);\nsource.write(new Float32Array([1, 2, 3, 4]));\nweights.write(new Float32Array([10, 20, 30]));\n\nconst scale = elementKernel({\n  state: { output: 'f32' },\n  inputs: { source: 'f32' },\n  auxInputs: { weights: 'f32' },\n  code: `fn userFn(i: u32) {\n    output[i] = source[i] * weights[i % arrayLength(&weights)];\n  }`,\n});\nconst options: ElementKernelDispatchOptions = { count: 4 };\nawait scale.run({ output, source, weights }, undefined, options);\nconsole.log(Array.from(await output.read())); // [10, 40, 90, 40, 0, 0]\nscale.destroy();\noutput.destroy(); source.destroy(); weights.destroy();"
             }
           ]
         },
@@ -3700,7 +4201,7 @@
             "en": "Complete options accepted by elementKernel.",
             "zh": "elementKernel 接受的完整配置。"
           },
-          "source": "dist/core/kernel.js",
+          "source": "src/core/kernel.ts",
           "parameters": [
             {
               "name": "name",
@@ -3731,6 +4232,16 @@
                 "zh": "只读 storage 数组；state 与 inputs 合计至少一个字段。"
               },
               "default": "{}"
+            },
+            {
+              "name": "auxInputs",
+              "type": "Record<string, ScalarKind>",
+              "required": false,
+              "default": "{}",
+              "description": {
+                "en": "Read-only auxiliary storage arrays with independent lengths; do not determine dispatch count. Bounds must be handled in WGSL. Added in 2.1.0.",
+                "zh": "长度独立的只读辅助 storage 数组，不决定 dispatch 数量；索引边界由 WGSL 处理。2.1.0 新增。"
+              }
             },
             {
               "name": "uniforms",
@@ -3764,12 +4275,32 @@
           ],
           "constraints": [
             {
-              "en": "All declared state/input buffers must be present, have the declared kind, share one device, and have the same element length. Even statically unused declared fields are checked. Extra resource/uniform keys are ignored.",
-              "zh": "所有声明的 state/input 缓冲区必须存在、类型匹配、使用同一设备且元素长度相同；即使静态未使用的声明字段也会校验。额外资源／uniform 键被忽略。"
+              "en": "New in 2.1.0: auxInputs, options.count and ElementKernelDispatchOptions are documented from src/core/kernel.ts and src/index.ts; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：auxInputs、options.count 与 ElementKernelDispatchOptions 依据 src/core/kernel.ts 和 src/index.ts 记录，在 npm 2.0.0 历史审计基线之上扩展。"
             },
             {
-              "en": "Field names must be unique across state, inputs and uniforms. The uniform name count is reserved and automatically injected. Use valid WGSL identifiers; the compiler checks reserved words.",
-              "zh": "字段名在 state、inputs、uniforms 之间必须唯一。uniform 名 count 为保留名称，由库自动注入。应使用有效 WGSL 标识符，保留字由编译器检查。"
+              "en": "All declared state/input/auxInputs buffers must be present and have the declared kind, including statically unused fields. Bound resources must belong to the shared device. Extra resource/uniform keys are ignored.",
+              "zh": "所有声明的 state/input/auxInputs 缓冲必须存在且类型匹配，包括静态未使用的字段。参与绑定的资源须属于共享设备。额外资源／uniform 键被忽略。"
+            },
+            {
+              "en": "Without options.count, state and inputs must have equal lengths and the first such buffer determines the invocation count. At least one state or inputs field is required; auxInputs do not determine the count.",
+              "zh": "省略 options.count 时，state 与 inputs 必须等长，调用数量取首个此类缓冲长度。至少需要一个 state 或 inputs 字段；auxInputs 不参与数量推导。"
+            },
+            {
+              "en": "An explicit count must be an integer in 0..0xffffffff. State/input lengths may differ, but every such buffer must contain at least count elements. In either mode, ceil(count / workgroupSize) must not exceed device.limits.maxComputeWorkgroupsPerDimension.",
+              "zh": "显式 count 须为 0..0xffffffff 内的整数。state/input 可不同长，但每个缓冲都必须至少容纳 count 个元素。两种模式下，ceil(count / workgroupSize) 均不得超过 device.limits.maxComputeWorkgroupsPerDimension。"
+            },
+            {
+              "en": "Auxiliary arrays are read-only and may have independent lengths. They do not participate in per-element capacity checks; auxiliary indexing bounds are the WGSL author's responsibility. Query their lengths with arrayLength(&weights).",
+              "zh": "辅助数组只读且长度独立，不参与逐元素容量校验；辅助索引边界由 WGSL 作者负责。可用 arrayLength(&weights) 查询长度。"
+            },
+            {
+              "en": "count: 0 validates all resources, uniforms and options, then performs no encoding or submission. It neither consumes nor clears an existing encode-once guard.",
+              "zh": "count: 0 完整校验全部资源、uniform 与选项后，不编码、不提交，也不消耗或清除已有的 encode-once 检查状态。"
+            },
+            {
+              "en": "Field names must be unique across state, inputs, auxInputs and uniforms. The uniform name count is reserved and automatically injected. Use valid WGSL identifiers; the compiler checks reserved words.",
+              "zh": "字段名在 state、inputs、auxInputs、uniforms 之间必须唯一。uniform 名 count 为保留名称，由库自动注入。应使用有效 WGSL 标识符，保留字由编译器检查。"
             },
             {
               "en": "Do not read neighboring elements from a buffer being concurrently written in the same dispatch; use separate input/output buffers or PingPong. The library does not provide global synchronization inside a dispatch.",
@@ -3778,6 +4309,10 @@
             {
               "en": "The generated source uses lexical resource-use analysis; shadowing a resource name with a local variable is a known analysis limitation.",
               "zh": "生成源码使用词法资源使用分析；局部变量遮蔽资源名是已知分析限制。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
             }
           ],
           "examples": [
@@ -3788,6 +4323,75 @@
                 "en": "Example",
                 "zh": "示例"
               }
+            },
+            {
+              "language": "typescript",
+              "caption": {
+                "en": "Independent auxiliary length and an explicit buffer prefix (new in 2.1.0)",
+                "zh": "独立辅助长度与显式缓冲前缀（2.1.0 新增）"
+              },
+              "code": "import { Buffer, elementKernel } from 'wgpu-kit';\nimport type { ElementKernelDispatchOptions } from 'wgpu-kit';\n\nconst output = await Buffer.create('f32', 6);\nconst source = await Buffer.create('f32', 4);\nconst weights = await Buffer.create('f32', 3);\nsource.write(new Float32Array([1, 2, 3, 4]));\nweights.write(new Float32Array([10, 20, 30]));\n\nconst scale = elementKernel({\n  state: { output: 'f32' },\n  inputs: { source: 'f32' },\n  auxInputs: { weights: 'f32' },\n  code: `fn userFn(i: u32) {\n    output[i] = source[i] * weights[i % arrayLength(&weights)];\n  }`,\n});\nconst options: ElementKernelDispatchOptions = { count: 4 };\nawait scale.run({ output, source, weights }, undefined, options);\nconsole.log(Array.from(await output.read())); // [10, 40, 90, 40, 0, 0]\nscale.destroy();\noutput.destroy(); source.destroy(); weights.destroy();"
+            }
+          ]
+        },
+        {
+          "name": "ElementKernelDispatchOptions",
+          "kind": "interface",
+          "signature": "export interface ElementKernelDispatchOptions { count?: number; }",
+          "description": {
+            "en": "Optional invocation count accepted by run() and inherited by ElementKernelEncodeOptions for encode(). Added in 2.1.0; run() remains count-only.",
+            "zh": "run() 接收的可选调用数量，并由 encode() 的 ElementKernelEncodeOptions 继承。2.1.0 新增；run() 仍只接收 count。"
+          },
+          "source": "src/core/kernel.ts",
+          "typeDetails": [
+            {
+              "name": "count",
+              "type": "number",
+              "required": false,
+              "default": {
+                "en": "First state/input buffer length",
+                "zh": "首个 state/input 缓冲长度"
+              },
+              "description": {
+                "en": "Integer 0..0xffffffff. Limits invocation indices to [0, count); every state/input capacity must be at least count. Auxiliary arrays have independent bounds.",
+                "zh": "0..0xffffffff 内整数。调用索引范围为 [0, count)，所有 state/input 容量须至少为 count。辅助数组具有独立边界。"
+              }
+            }
+          ],
+          "constraints": [
+            {
+              "en": "New in 2.1.0: auxInputs, options.count and ElementKernelDispatchOptions are documented from src/core/kernel.ts and src/index.ts; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：auxInputs、options.count 与 ElementKernelDispatchOptions 依据 src/core/kernel.ts 和 src/index.ts 记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            },
+            {
+              "en": "Without options.count, state and inputs must have equal lengths and the first such buffer determines the invocation count. At least one state or inputs field is required; auxInputs do not determine the count.",
+              "zh": "省略 options.count 时，state 与 inputs 必须等长，调用数量取首个此类缓冲长度。至少需要一个 state 或 inputs 字段；auxInputs 不参与数量推导。"
+            },
+            {
+              "en": "An explicit count must be an integer in 0..0xffffffff. State/input lengths may differ, but every such buffer must contain at least count elements. In either mode, ceil(count / workgroupSize) must not exceed device.limits.maxComputeWorkgroupsPerDimension.",
+              "zh": "显式 count 须为 0..0xffffffff 内的整数。state/input 可不同长，但每个缓冲都必须至少容纳 count 个元素。两种模式下，ceil(count / workgroupSize) 均不得超过 device.limits.maxComputeWorkgroupsPerDimension。"
+            },
+            {
+              "en": "Auxiliary arrays are read-only and may have independent lengths. They do not participate in per-element capacity checks; auxiliary indexing bounds are the WGSL author's responsibility. Query their lengths with arrayLength(&weights).",
+              "zh": "辅助数组只读且长度独立，不参与逐元素容量校验；辅助索引边界由 WGSL 作者负责。可用 arrayLength(&weights) 查询长度。"
+            },
+            {
+              "en": "count: 0 validates all resources, uniforms and options, then performs no encoding or submission. It neither consumes nor clears an existing encode-once guard.",
+              "zh": "count: 0 完整校验全部资源、uniform 与选项后，不编码、不提交，也不消耗或清除已有的 encode-once 检查状态。"
+            },
+            {
+              "en": "New in 2.1.0: managed batches and typed kernel calls are documented from their src files; these additions extend the historical npm 2.0.0 audit baseline.",
+              "zh": "2.1.0 新增：托管批次与类型化内核调用依据对应 src 文件记录，在 npm 2.0.0 历史审计基线之上扩展。"
+            }
+          ],
+          "examples": [
+            {
+              "language": "typescript",
+              "caption": {
+                "en": "Independent auxiliary length and an explicit buffer prefix (new in 2.1.0)",
+                "zh": "独立辅助长度与显式缓冲前缀（2.1.0 新增）"
+              },
+              "code": "import { Buffer, elementKernel } from 'wgpu-kit';\nimport type { ElementKernelDispatchOptions } from 'wgpu-kit';\n\nconst output = await Buffer.create('f32', 6);\nconst source = await Buffer.create('f32', 4);\nconst weights = await Buffer.create('f32', 3);\nsource.write(new Float32Array([1, 2, 3, 4]));\nweights.write(new Float32Array([10, 20, 30]));\n\nconst scale = elementKernel({\n  state: { output: 'f32' },\n  inputs: { source: 'f32' },\n  auxInputs: { weights: 'f32' },\n  code: `fn userFn(i: u32) {\n    output[i] = source[i] * weights[i % arrayLength(&weights)];\n  }`,\n});\nconst options: ElementKernelDispatchOptions = { count: 4 };\nawait scale.run({ output, source, weights }, undefined, options);\nconsole.log(Array.from(await output.read())); // [10, 40, 90, 40, 0, 0]\nscale.destroy();\noutput.destroy(); source.destroy(); weights.destroy();"
             }
           ]
         },
