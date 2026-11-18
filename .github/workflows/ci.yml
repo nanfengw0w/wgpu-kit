@@ -13,6 +13,7 @@ jobs:
       - run: npx tsc --noEmit
       - run: npx vitest run
       - run: npm run build
+      - run: npm run audit:package
 
   # GPU 正确性探针:runner 无独显,用 Chrome 内置的 SwiftShader(CPU 实现的
   # WebGPU)跑。抓的是逻辑/物理正确性(扫描不变量、grid==tiled==CPU、冻结带),
@@ -27,6 +28,7 @@ jobs:
         with: { node-version: 22 }
       - run: npm ci
       - run: npm run bundle:tests
+      - run: npm run build
       - name: Confirm Chrome
         run: google-chrome --version
       - name: Fast probes (SwiftShader WebGPU)
@@ -35,6 +37,7 @@ jobs:
           tests/gpu/smoke.html
           tests/gpu/primitives.html
           tests/gpu/ngrid.html
+          tests/gpu/shared-device.html
           --timeout=180000
       - name: Grid physics probes (SwiftShader WebGPU, lite)
         run: >-
@@ -52,5 +55,6 @@ jobs:
           tests/gpu/smoke.html
           tests/gpu/primitives.html
           tests/gpu/ngrid.html
+          tests/gpu/shared-device.html
           "tests/gpu/grid-debug.html?lite=1"
           --timeout=1200000

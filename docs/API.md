@@ -3,11 +3,15 @@
 # wgpu-kit API Reference
 
 > WebGPU compute for TypeScript. Requires a WebGPU-enabled browser. The compute core has no runtime dependencies.
-> Version: v2.1.0 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
+> Version: v2.2.0 · 简体中文参考:[API.zh-CN.md](API.zh-CN.md)
 
 Version 2.1.0 releases `auxInputs`, dispatch counts, managed batches and
 `typedElementKernel`. The imported API audit retains npm 2.0.0 as its historical
 baseline; the 2.1.0 additions are documented from the corresponding source files.
+
+Version 2.2.0 adds [`PingPong.encodeWith()`](#encodewith) for batch-managed buffer swaps.
+For an application-owned device and native render-pass example, see
+[compute and render](COMPUTE-RENDER.md).
 
 **Entry points**
 
@@ -413,11 +417,79 @@ const pp = await PingPong.create({ pos: 'vec2f', vel: 'vec2f' }, 100_000);
 
 | Member | Type | Description |
 | --- | --- | --- |
-| .current | Record\<K, Buffer\> (readonly) | Current-frame side (render / readback) |
-| .other | Record\<K, Buffer\> (readonly) | The write target for the kernel |
+| .current | `{ [P in K]: Buffer<F[P]> }` (readonly property) | Current-frame side (render / readback) |
+| .other | `{ [P in K]: Buffer<F[P]> }` (readonly property) | The write target for the kernel |
 | .swap ( ) | void | Flip the sides |
 | .runWith ( fn ) | Promise\<void\> | Calls fn(write, read) then swaps automatically |
+| .encodeWith ( batch, fn ) | void | Encode synchronously and swap. Cancellation restores the initial side. |
+| .clone ( ) | `Promise<PingPong<K, F>>` | Allocate both sides with the same fields, kinds and length; values are not copied |
 | .destroy ( ) | void | Destroys all buffers |
+
+### encodeWith
+
+Available from 2.2.0.
+
+```ts
+encodeWith(
+  batch: ComputeBatch,
+  fn: (write: { [P in K]: Buffer<F[P]> }, read: { [P in K]: Buffer<F[P]> }) => undefined,
+): void;
+```
+
+Prepare kernels before calling the helper. `batch` must be open; the callback
+receives `write = other` and `read = current`, preserving each field's Buffer
+kind. It must return `undefined` synchronously: `async` callbacks fail TypeScript
+checking, and a returned Promise or thenable is also rejected at runtime. The
+callback should only encode commands into `batch.encoder`, passing `{ batch }`
+to kernels; submit or cancel the batch outside the callback.
+
+After a successful callback, the helper immediately flips the sides so the next
+encoded step sees the new logical current side. It does not submit or wait for
+GPU completion. On an instance's first helper call in a batch, the helper records
+its initial side and reserves that PingPong until the batch settles. Further
+calls on that same batch are allowed. A successful callback also swaps when it
+encodes no work, so skip the entire `encodeWith()` call when the dispatch count
+is zero. A named callback can declare `: undefined` as its return type.
+
+The same PingPong cannot join another open
+batch or re-enter its helper; manual `swap()` and legacy `runWith()` are rejected
+while it is reserved. Conversely, an in-flight legacy `runWith()` prevents
+`encodeWith()` from starting.
+
+`batch.cancel()` restores every participating PingPong to its first helper call's
+initial side. A callback exception, including rejected asynchronous use, cancels
+the **entire batch**, restores all its participating PingPongs, and propagates
+the error. A synchronous `encoder.finish()` or `queue.submit()` exception during
+`batch.submit()` has the same restoration effect. A successful submission keeps
+the final sides and releases ownership immediately; a later GPU completion
+failure does not roll back already-submitted directions.
+
+Restoration covers only the side selection managed by this helper. It does not
+undo submitted GPU work, CPU buffer writes or manual swaps outside the helper.
+The existing standalone `swap()` and `runWith()` behavior remains unchanged when
+the PingPong is not reserved; `runWith()` still swaps only after its asynchronous
+callback succeeds and does not provide batch cancellation restoration.
+
+```ts
+import { PingPong, createBatch, typedElementKernel } from 'wgpu-kit';
+
+const pp = await PingPong.create({ value: 'f32' }, 4);
+pp.current.value.write(new Float32Array([1, 2, 3, 4]));
+const step = typedElementKernel({
+  state: { next: 'f32' }, inputs: { previous: 'f32' },
+  code: 'fn userFn(i: u32) { next[i] = previous[i] + 1.0; }',
+});
+await step.prepare();
+const batch = await createBatch();
+for (let i = 0; i < 3; i++) {
+  pp.encodeWith(batch, (write, read) => {
+    step.encode(batch.encoder, { next: write.value, previous: read.value }, undefined, { batch });
+  });
+}
+batch.submit(); // Use batch.cancel() instead to restore the initial side.
+console.log(Array.from(await pp.current.value.read())); // [4, 5, 6, 7]
+step.destroy(); pp.destroy();
+```
 
 ---
 

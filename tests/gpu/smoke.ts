@@ -592,6 +592,61 @@ fn userFn(idx: u32) { out[idx] = lookup(ids[idx]); }`;
     pp.destroy();
   }
 
+  // 托管换边按实际提交保留方向,取消与回调异常恢复首调方向。
+  {
+    const n = 257;
+    const pp = await PingPong.create({ values: 'u32' }, n);
+    pp.current.values.write(Uint32Array.from({ length: n }, (_, i) => i));
+    const k = elementKernel({
+      name: 'managed-pingpong', state: { next: 'u32' }, inputs: { previous: 'u32' }, uniforms: { delta: 'u32' },
+      code: 'fn userFn(i:u32, delta:u32){ next[i] = previous[i] + delta; }',
+    });
+    await k.prepare();
+    const submitted = await createBatch();
+    for (let delta = 1; delta <= 3; delta++) {
+      pp.encodeWith(submitted, (write, read) => {
+        k.encode(submitted.encoder, { next: write.values, previous: read.values }, { delta }, { batch: submitted });
+      });
+    }
+    submitted.submit();
+    const committed = pp.current.values;
+    const rows = (await committed.read()) as Uint32Array;
+    report('pingpong-encodeWith-gpu', rows.every((value, i) => value === i + 6), '3轮独立参数,每项增加6');
+
+    const cancelled = await createBatch();
+    for (let i = 0; i < 3; i++) {
+      pp.encodeWith(cancelled, (write, read) => {
+        k.encode(cancelled.encoder, { next: write.values, previous: read.values }, { delta: 100 }, { batch: cancelled });
+      });
+    }
+    cancelled.cancel();
+    const unchanged = (await pp.current.values.read()) as Uint32Array;
+    const other = (await pp.other.values.read()) as Uint32Array;
+    report('pingpong-cancel-restores-side', pp.current.values === committed && unchanged.every((value, i) => value === i + 6) && other.every((value, i) => value === i + 3),
+      '奇数次换边取消后方向恢复,两侧GPU内容均未被取消命令改写');
+
+    const failed = await createBatch();
+    pp.encodeWith(failed, (write, read) => {
+      k.encode(failed.encoder, { next: write.values, previous: read.values }, { delta: 20 }, { batch: failed });
+    });
+    const failure = new Error('abort remaining frame');
+    let propagated = false;
+    try { pp.encodeWith(failed, () => { throw failure; }); }
+    catch (error) { propagated = error === failure; }
+    const afterFailure = (await pp.current.values.read()) as Uint32Array;
+    report('pingpong-callback-error-cancels', propagated && failed.status === 'cancelled' && pp.current.values === committed && afterFailure.every((value, i) => value === i + 6),
+      '回调异常取消此前编码并恢复方向');
+
+    const retry = await createBatch();
+    pp.encodeWith(retry, (write, read) => {
+      k.encode(retry.encoder, { next: write.values, previous: read.values }, { delta: 7 }, { batch: retry });
+    });
+    retry.submit();
+    const final = (await pp.current.values.read()) as Uint32Array;
+    report('pingpong-retry-after-cancel', final.every((value, i) => value === i + 13), '取消和异常后继续正确计算');
+    k.destroy(); pp.destroy();
+  }
+
   // batch 不改变旧 encoder 的 guard;cancel 丢弃编码,也不覆盖旧参数快照。
   {
     const legacyOut = await Buffer.create('u32', 8);

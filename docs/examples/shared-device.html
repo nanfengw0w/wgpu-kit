@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wgpu-kit · shared device, compute → render</title>
+  <style>
+    body { max-width: 48rem; margin: 2rem auto; padding: 0 1rem; background: #10151c; color: #e5edf7; font: 16px/1.5 system-ui, sans-serif; }
+    canvas { display: block; width: 100%; height: auto; border: 1px solid #48576b; }
+    a { color: #9ccfff; }
+    button { padding: .4rem .9rem; }
+  </style>
+</head>
+<body>
+  <h1>Shared device: compute → render</h1>
+  <p>The compute shader writes a color grid. A native render pass reads that same GPU storage.</p>
+  <canvas id="canvas" width="640" height="400" aria-label="Animated color gradient generated on the GPU" data-frames="0"></canvas>
+  <p id="status" role="status">Requesting a WebGPU device…</p>
+  <button id="stop" type="button" disabled>Stop and release resources</button>
+  <p><a href="../COMPUTE-RENDER.md">English guide</a> · <a href="../COMPUTE-RENDER.zh-CN.md">中文教程</a></p>
+  <script type="module">
+    import { Buffer as GpuBuffer, GpuContext, createBatch, elementKernel } from '../../dist/index.js';
+
+    const canvas = document.querySelector('#canvas');
+    const status = document.querySelector('#status');
+    const stopButton = document.querySelector('#stop');
+    const size = 64;
+    let adapter, device, context, colors, kernel, pipeline, bindings;
+    let stopped = false, frame = 0, submittedFrames = 0;
+
+    function releaseResources() {
+      kernel?.destroy();
+      colors?.destroy();
+      context?.unconfigure();
+      device?.removeEventListener('uncapturederror', onGpuError);
+      // This page owns the device. A component sharing an application's device
+      // should release only its own resources, leaving the shared device alive.
+      device?.destroy();
+      kernel = colors = context = device = adapter = undefined;
+    }
+
+    function stop() {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      stopButton.disabled = true;
+      releaseResources();
+    }
+
+    function fail(error) {
+      if (stopped) return;
+      status.textContent = `WebGPU error: ${error instanceof Error ? error.message : String(error)}`;
+      canvas.dataset.state = 'error';
+      stop();
+    }
+
+    function onGpuError(event) { fail(event.error); }
+    stopButton.addEventListener('click', () => {
+      stop();
+      canvas.dataset.state = 'stopped';
+      status.textContent = 'Stopped. Reload the page to run again.';
+    });
+    window.addEventListener('pagehide', stop, { once: true });
+
+    async function start() {
+      if (!navigator.gpu) throw new Error('Use a WebGPU-enabled browser over HTTPS or localhost.');
+
+      // 1. The application creates and owns its WebGPU device.
+      adapter = (await navigator.gpu.requestAdapter())
+        ?? (await navigator.gpu.requestAdapter({ forceFallbackAdapter: true }));
+      if (stopped) { releaseResources(); return; }
+      if (!adapter) throw new Error('No WebGPU adapter is available.');
+      device = await adapter.requestDevice();
+      if (stopped) { releaseResources(); return; }
+      device.addEventListener('uncapturederror', onGpuError);
+      void device.lost.then(info => fail(new Error(`Device lost: ${info.message}`)));
+
+      // 2. Adopt BEFORE Buffer.create(), kernel.prepare() or createBatch().
+      // Importing the module alone does not initialize its GPU context.
+      GpuContext.adopt(device);
+      colors = await GpuBuffer.create('vec4f', size * size);
+      if (stopped) { releaseResources(); return; }
+      kernel = elementKernel({
+        state: { colors: 'vec4f' },
+        uniforms: { size: 'u32', time: 'f32' },
+        code: `fn userFn(i: u32, size: u32, time: f32) {
+          let uv = (vec2f(f32(i % size), f32(i / size)) + 0.5) / f32(size);
+          let wave = 0.5 + 0.5 * sin(time + uv.x * 6.2831853);
+          colors[i] = vec4f(uv.x, uv.y, 0.25 + 0.5 * wave, 1.0);
+        }`,
+      });
+      const preparingKernel = kernel;
+      try { await preparingKernel.prepare(); }
+      finally { if (stopped) preparingKernel.destroy(); }
+      if (stopped) { releaseResources(); return; }
+
+      // 3. Native WebGPU reads the same buffer as STORAGE, not as VERTEX data.
+      context = canvas.getContext('webgpu');
+      if (!context) throw new Error('The canvas cannot create a WebGPU context.');
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      context.configure({ device, format, alphaMode: 'opaque' });
+      const module = device.createShaderModule({
+        code: `
+          @group(0) @binding(0) var<storage, read> pixels: array<vec4f>;
+          struct Vertex { @builtin(position) position: vec4f, @location(0) uv: vec2f };
+          @vertex fn vs(@builtin(vertex_index) i: u32) -> Vertex {
+            let points = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
+            var out: Vertex;
+            out.position = vec4f(points[i], 0, 1);
+            out.uv = points[i] * vec2f(0.5, -0.5) + 0.5;
+            return out;
+          }
+          @fragment fn fs(vertex: Vertex) -> @location(0) vec4f {
+            let xy = min(vec2u(clamp(vertex.uv, vec2f(0), vec2f(1)) * ${size}.0), vec2u(${size - 1}));
+            return pixels[xy.y * ${size}u + xy.x];
+          }`,
+      });
+      pipeline = await device.createRenderPipelineAsync({
+        layout: 'auto',
+        vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      if (stopped) { releaseResources(); return; }
+      bindings = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: colors.gpuBuffer } }],
+      });
+      status.textContent = 'Running: compute and render share one device, buffer and submission. No CPU readback.';
+      canvas.dataset.state = 'running';
+      stopButton.disabled = false;
+      frame = requestAnimationFrame(draw);
+    }
+
+    async function draw(now) {
+      frame = 0;
+      if (stopped) return;
+      let batch;
+      try {
+        // 4. One encoder orders compute before rendering. Each frame owns a batch.
+        batch = await createBatch();
+        if (stopped) { batch.cancel(); return; }
+        kernel.encode(batch.encoder, { colors }, { size, time: now / 1000 }, { batch });
+        const pass = batch.encoder.beginRenderPass({
+          colorAttachments: [{
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear', storeOp: 'store',
+          }],
+        });
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindings);
+        pass.draw(3);
+        pass.end();
+        batch.submit(); // Submits once; does not wait for GPU completion.
+
+        // Optional observation for browser checks: this counts submissions.
+        canvas.dataset.frames = String(++submittedFrames);
+        canvas.dispatchEvent(new CustomEvent('wgpu-kit-frame', { detail: { submittedFrames } }));
+      } catch (error) {
+        if (batch?.status === 'open') batch.cancel();
+        fail(error);
+      } finally {
+        // Schedule only after this async frame settles, including during stop().
+        if (!stopped) frame = requestAnimationFrame(draw);
+      }
+    }
+
+    void start().catch(error => {
+      if (stopped) releaseResources();
+      else fail(error);
+    });
+  </script>
+</body>
+</html>

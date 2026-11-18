@@ -1,9 +1,8 @@
 <section id="getting-started">
 <h2>Getting started</h2>
 <p>wgpu-kit is a TypeScript toolkit for browser GPU computation. Use the core APIs to allocate storage, write a per-element WGSL function, and compose compute work with your own WebGPU renderer.</p>
-<p>Version 2.1.0 releases auxiliary inputs, dispatch counts, managed batches and typed kernels. The imported API audit retains npm 2.0.0 as its historical baseline; the additions are documented from their source files.</p>
 <p>Install the published package in your application:</p>
-<pre><code>npm install wgpu-kit@2.1.0</code></pre>
+<pre><code>npm install wgpu-kit@2.2.0</code></pre>
 <p>Run this in a browser module served over HTTPS or localhost. The first allocation requests a GPU device. This complete example scales four values and reads the result back:</p>
 <pre><code>import { Buffer, elementKernel } from 'wgpu-kit';
 
@@ -131,6 +130,7 @@ await step.run({
 state.swap();
 // state.current now refers to the freshly written side.</code></pre>
 <p>After swapping, use the new current side for rendering or the next step. Destroy both the kernel and the PingPong allocation when the application is done. See the <a href="/examples/reaction-diffusion/">reaction-diffusion example</a> for a two-component neighborhood simulation.</p>
+<p>In a managed batch, use <a href="/docs/api/#PingPong-encodeWith">PingPong.encodeWith()</a> to encode a step and swap buffers together. Cancelling the batch restores the initial side. Skip the call when the dispatch count is zero.</p>
 </section>
 <section id="composition">
 <h2>Compose a frame</h2>
@@ -194,12 +194,13 @@ const step = typedElementKernel({
 await step.prepare();
 const batch = await createBatch();
 for (let iteration = 0; iteration &lt; 20; iteration++) {
-  step.encode(batch.encoder, {
-    next: state.other.value,
-    previous: state.current.value,
-    weights,
-  }, { delta: iteration + 1 }, { count: 4, batch });
-  state.swap();
+  state.encodeWith(batch, (write, read) =&gt; {
+    step.encode(batch.encoder, {
+      next: write.value,
+      previous: read.value,
+      weights,
+    }, { delta: iteration + 1 }, { count: 4, batch });
+  });
 }
 batch.submit();
 console.log(Array.from(await state.current.value.read()));
@@ -223,6 +224,7 @@ const storage = await Buffer.create('vec4f', vertexCount);
 // The allocation uses your existing device.</code></pre>
 <p><code>GpuContext.adopt()</code> installs the caller-owned device as the library context. It must run before <code>GpuContext.get()</code> or anything that initializes the singleton. Replacing an already-initialized context is rejected.</p>
 <p>Check native WebGPU usage flags and limits when integrating a renderer. Sharing a GPUDevice does not automatically make every higher-level rendering adapter zero-copy.</p>
+<p>Follow the complete shared-device guide in <a href="https://github.com/nanfengw0w/wgpu-kit/blob/main/docs/COMPUTE-RENDER.md">English</a> or <a href="https://github.com/nanfengw0w/wgpu-kit/blob/main/docs/COMPUTE-RENDER.zh-CN.md">简体中文</a> to run a standalone compute and render example.</p>
 </section>
 <section id="primitives">
 <h2>Scan and reduce</h2>
@@ -274,8 +276,8 @@ input.destroy(); output.destroy();</code></pre>
 </section>
 <section id="release">
 <h2>Release and source</h2>
-<p>This site bundles the <code>wgpu-kit@2.1.0</code> package built from this repository.</p>
+<p>This site bundles the <code>wgpu-kit@2.2.0</code> package built from this repository.</p>
 <p>The imported API documentation was audited against the published <code>wgpu-kit@2.0.0</code> npm package. At verification on September 30, 2026, npm latest and the repository’s default branch matched commit <code>306a7a7</code>.</p>
 <p>The custom ribbon, fields, image pipeline, and numeric tools are original application examples of the core APIs. Their source is available on the individual example pages and in the complete site download.</p>
-<ul><li><a href="https://github.com/nanfengw0w/wgpu-kit/tree/306a7a7233c9de8b433d179ed1164482143a4989" target="_blank" rel="noopener">Verified library source</a></li><li><a href="https://www.npmjs.com/package/wgpu-kit/v/2.0.0" target="_blank" rel="noopener">Published npm package</a></li><li><a href="https://github.com/nanfengw0w/wgpu-kit/archive/refs/heads/main.zip">Download this site’s complete source</a></li><li><a href="/assets/THIRD-PARTY-NOTICES.txt">Licenses and notices</a></li></ul>
+<ul><li><a href="https://github.com/nanfengw0w/wgpu-kit/tree/306a7a7233c9de8b433d179ed1164482143a4989" target="_blank" rel="noopener">Audited 2.0.0 source</a></li><li><a href="https://www.npmjs.com/package/wgpu-kit/v/2.2.0" target="_blank" rel="noopener">Published npm package</a></li><li><a href="https://github.com/nanfengw0w/wgpu-kit/archive/refs/heads/main.zip">Download this site’s complete source</a></li><li><a href="/assets/THIRD-PARTY-NOTICES.txt">Licenses and notices</a></li></ul>
 </section>

@@ -1,6 +1,6 @@
 {
   "name": "wgpu-kit",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Composable WebGPU compute for the browser, with GPU-resident data and zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
@@ -56,7 +56,12 @@
     "react": ">=18"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs/API.md",
+    "docs/API.zh-CN.md",
+    "docs/COMPUTE-RENDER.md",
+    "docs/COMPUTE-RENDER.zh-CN.md",
+    "docs/examples/shared-device.html"
   ],
   "scripts": {
     "dev": "node playground/scripts/dev.mjs",

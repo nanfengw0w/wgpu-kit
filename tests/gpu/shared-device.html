@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Shared-device example GPU regression</title>
+  <style>
+    body { background: #10151c; color: #e5edf7; font: 13px/1.5 monospace; }
+    iframe { width: 720px; height: 640px; border: 1px solid #48576b; }
+  </style>
+</head>
+<body>
+  <pre id="out">Loading the actual compute → render example…</pre>
+  <iframe id="example" title="Actual shared-device example"></iframe>
+  <script type="module">
+    const results = window.__results = [];
+    const iframe = document.querySelector('#example');
+    const report = (name, pass, detail) => {
+      results.push({ name, pass, detail });
+      document.querySelector('#out').textContent = results.map(r => `${r.pass ? 'PASS' : 'FAIL'} ${r.name}: ${r.detail}`).join('\n');
+    };
+
+    // Serialized into a module before the unmodified example module. Both import
+    // the same library URL, so these class wrappers observe the real singleton.
+    function instrument(GpuContext, KitBuffer) {
+      const state = parent.__sharedDeviceProbe = {
+        trace: [], errors: [], frames: [], submissions: [], copies: [],
+        devices: 0, reads: 0, now: 0,
+      };
+      const groups = new WeakMap(), commands = new WeakMap();
+      const wrap = (object, name, factory) => {
+        const original = object[name];
+        object[name] = factory(original);
+      };
+      window.addEventListener('error', event => state.errors.push(event.message || 'Script/resource error'));
+      window.addEventListener('unhandledrejection', event => state.errors.push(String(event.reason)));
+      wrap(window, 'requestAnimationFrame', original => function(callback) {
+        return original.call(this, now => { state.now = now; return callback(now); });
+      });
+      wrap(GpuContext, 'get', original => function(...args) {
+        state.trace.push('get');
+        return original.apply(this, args);
+      });
+      wrap(GpuContext, 'adopt', original => function(device) {
+        state.trace.push('adopt');
+        state.adopted = device;
+        return original.call(this, device);
+      });
+      wrap(KitBuffer, 'create', original => async function(...args) {
+        state.trace.push('buffer-create');
+        const buffer = await original.apply(this, args);
+        state.storage = buffer.gpuBuffer;
+        return buffer;
+      });
+      wrap(KitBuffer.prototype, 'read', original => function(...args) {
+        state.reads++;
+        return original.apply(this, args);
+      });
+      wrap(navigator.gpu, 'requestAdapter', original => async function(...args) {
+        state.trace.push('request-adapter');
+        const adapter = await original.apply(this, args);
+        if (!adapter) return adapter;
+        parent.__adapter = [adapter.info?.vendor, adapter.info?.description].filter(Boolean).join(' / ');
+        wrap(adapter, 'requestDevice', requestDevice => async function(...options) {
+          state.trace.push('request-device');
+          const device = await requestDevice.apply(this, options);
+          state.device = device;
+          state.devices++;
+          device.addEventListener('uncapturederror', event => state.errors.push(event.error.message));
+          for (const name of ['createComputePipeline', 'createComputePipelineAsync']) {
+            wrap(device, name, create => function(...descriptors) {
+              state.trace.push('compute-pipeline');
+              return create.apply(this, descriptors);
+            });
+          }
+          wrap(device, 'createBindGroup', create => function(descriptor) {
+            const group = create.call(this, descriptor);
+            groups.set(group, descriptor.entries.map(entry => entry.resource.buffer).filter(Boolean));
+            return group;
+          });
+          wrap(device, 'createCommandEncoder', create => function(descriptor) {
+            const encoder = create.call(this, descriptor);
+            const record = { copy: descriptor?.label === 'shared-device-test-copy', passes: [] };
+            for (const [method, kind] of [['beginComputePass', 'compute'], ['beginRenderPass', 'render']]) {
+              wrap(encoder, method, begin => function(...descriptors) {
+                const pass = begin.apply(this, descriptors);
+                const observation = { kind, buffers: [] };
+                record.passes.push(observation);
+                wrap(pass, 'setBindGroup', bind => function(index, group, ...offsets) {
+                  observation.buffers.push(...(groups.get(group) ?? []));
+                  return bind.call(this, index, group, ...offsets);
+                });
+                return pass;
+              });
+            }
+            wrap(encoder, 'finish', finish => function(...descriptors) {
+              const command = finish.apply(this, descriptors);
+              commands.set(command, record);
+              return command;
+            });
+            return encoder;
+          });
+          wrap(device.queue, 'submit', submit => function(buffers) {
+            const list = Array.from(buffers), records = list.map(buffer => commands.get(buffer));
+            const result = submit.call(this, list);
+            if (!records.length || !records.every(record => record?.copy)) state.submissions.push(records);
+            return result;
+          });
+          return device;
+        });
+        return adapter;
+      });
+      wrap(GPUCanvasContext.prototype, 'configure', configure => function(descriptor) {
+        state.format = descriptor.format;
+        state.canvasDevice = descriptor.device;
+        return configure.call(this, {
+          ...descriptor,
+          usage: (descriptor.usage ?? GPUTextureUsage.RENDER_ATTACHMENT) | GPUTextureUsage.COPY_SRC,
+        });
+      });
+      wrap(GPUCanvasContext.prototype, 'getCurrentTexture', get => function() {
+        return state.texture = get.call(this);
+      });
+
+      document.addEventListener('wgpu-kit-frame', event => {
+        const frame = event.detail.submittedFrames;
+        state.frames.push({ frame, submits: state.submissions.length });
+        if (frame !== 1 && frame !== 4) return;
+        const canvas = event.target, device = state.device;
+        const sample = { frame, now: state.now, width: canvas.width, height: canvas.height };
+        state.copies.push(sample);
+        let staging;
+        try {
+          const bytesPerRow = Math.ceil(canvas.width * 4 / 256) * 256;
+          staging = device.createBuffer({
+            size: bytesPerRow * canvas.height,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+          });
+          // Capture and submit synchronously in this frame event. Awaiting before
+          // copying could let the next animation frame expire the canvas texture.
+          const encoder = device.createCommandEncoder({ label: 'shared-device-test-copy' });
+          encoder.copyTextureToBuffer(
+            { texture: state.texture },
+            { buffer: staging, bytesPerRow, rowsPerImage: canvas.height },
+            { width: canvas.width, height: canvas.height },
+          );
+          device.queue.submit([encoder.finish()]);
+          void staging.mapAsync(GPUMapMode.READ).then(() => {
+            const data = new Uint8Array(staging.getMappedRange());
+            sample.pixels = [[20, 20], [320, 200], [615, 375]].map(([x, y]) => {
+              const offset = y * bytesPerRow + x * 4;
+              const bytes = Array.from(data.subarray(offset, offset + 4));
+              if (state.format.startsWith('bgra')) [bytes[0], bytes[2]] = [bytes[2], bytes[0]];
+              return { x, y, rgba: bytes };
+            });
+            staging.unmap();
+            staging.destroy();
+          }).catch(error => {
+            staging.destroy();
+            state.errors.push('Pixel readback: ' + String(error));
+          });
+        } catch (error) {
+          staging?.destroy();
+          state.errors.push('Pixel capture: ' + String(error));
+        }
+      }, true);
+    }
+
+    async function main() {
+      const exampleUrl = new URL(new URLSearchParams(location.search).get('example') || '/docs/examples/shared-device.html', location.href);
+      if (exampleUrl.origin !== location.origin) throw new Error('The example URL must be same-origin');
+      const response = await fetch(exampleUrl);
+      if (!response.ok) throw new Error(`Example request failed: ${response.status}`);
+      const source = new DOMParser().parseFromString(await response.text(), 'text/html');
+      const productModule = source.querySelector('script[type="module"]');
+      if (!productModule) throw new Error('The example has no module script');
+      const base = source.createElement('base');
+      base.href = new URL('.', exampleUrl).href;
+      source.head.prepend(base);
+      const injection = source.createElement('script');
+      injection.type = 'module';
+      const libraryUrl = new URL('../../dist/index.js', exampleUrl);
+      injection.textContent = `import { GpuContext, Buffer as KitBuffer } from ${JSON.stringify(libraryUrl.href)};\n(${instrument.toString()})(GpuContext, KitBuffer);`;
+      productModule.before(injection);
+      iframe.srcdoc = '<!doctype html>\n' + source.documentElement.outerHTML;
+
+      const deadline = performance.now() + 20000;
+      let state;
+      while (true) {
+        state = window.__sharedDeviceProbe;
+        if (state?.errors.length) throw new Error(state.errors.join('; '));
+        if (state?.frames.length >= 4 && state.copies.length === 2 && state.copies.every(copy => copy.pixels)) break;
+        if (performance.now() > deadline) throw new Error('Example startup/pixel capture timed out: ' + iframe.contentDocument?.querySelector('#status')?.textContent);
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+
+      const canvas = iframe.contentDocument.querySelector('#canvas');
+      const framesBeforeStop = Number(canvas.dataset.frames), submitsBeforeStop = state.submissions.length;
+      iframe.contentDocument.querySelector('#stop').click();
+      await new Promise(resolve => setTimeout(resolve, 250));
+
+      const index = name => state.trace.indexOf(name);
+      const order = ['request-adapter', 'request-device', 'adopt', 'buffer-create', 'get', 'compute-pipeline'];
+      report('shared-device-init-order', state.devices === 1 && state.adopted === state.device && state.canvasDevice === state.device
+        && order.every(name => index(name) >= 0) && order.every((name, i) => !i || index(order[i - 1]) < index(name)), state.trace.slice(0, 10).join(' → '));
+      report('shared-device-compute-render-submit', state.submissions.every(commands => commands.length === 1
+        && commands[0]?.passes.map(pass => pass.kind).join(',') === 'compute,render'), `${state.submissions.length} product submissions; test-copy submissions excluded`);
+      report('shared-device-storage-sharing', !!state.storage && state.submissions.every(commands => commands[0]?.passes.every(pass => pass.buffers.includes(state.storage))), 'Compute and render bind the same kit gpuBuffer');
+
+      const pixelDetails = [];
+      let pixelsCorrect = ['rgba8unorm', 'bgra8unorm'].includes(state.format);
+      for (const copy of state.copies) {
+        pixelsCorrect &&= copy.width === 640 && copy.height === 400;
+        for (const pixel of copy.pixels) {
+          const uvx = (Math.floor((pixel.x + 0.5) / copy.width * 64) + 0.5) / 64;
+          const uvy = (Math.floor((pixel.y + 0.5) / copy.height * 64) + 0.5) / 64;
+          const wave = 0.5 + 0.5 * Math.sin(copy.now / 1000 + uvx * 6.2831853);
+          const expected = [uvx, uvy, 0.25 + 0.5 * wave, 1].map(value => Math.round(value * 255));
+          pixelsCorrect &&= pixel.rgba.every((value, i) => Math.abs(value - expected[i]) <= 2);
+          pixelDetails.push(`${copy.frame}@${pixel.x},${pixel.y}: ${pixel.rgba.join('/')} expected ${expected.join('/')}`);
+        }
+      }
+      report('shared-device-render-pixels', pixelsCorrect, state.format + '; ' + pixelDetails.join('; '));
+      report('shared-device-multiple-frames', framesBeforeStop >= 4 && state.frames.every((entry, i) => entry.frame === i + 1 && entry.submits === entry.frame)
+        && state.reads === 0, `${framesBeforeStop} consecutive frames, one product submit each, ${state.reads} kit CPU readbacks`);
+      report('shared-device-stop', canvas.dataset.state === 'stopped' && Number(canvas.dataset.frames) === framesBeforeStop
+        && state.submissions.length === submitsBeforeStop, `No more product submissions for 250ms after Stop (${framesBeforeStop} frames)`);
+      report('shared-device-no-errors', state.errors.length === 0, state.errors.join('; ') || 'No uncaptured GPU, JavaScript or promise errors');
+    }
+
+    try { await main(); }
+    catch (error) {
+      report('shared-device-regression', false, error instanceof Error ? error.message : String(error));
+      iframe.remove();
+    } finally {
+      console.log('[RESULT]', JSON.stringify(results));
+      console.log('[RESULT64]' + btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(results)))));
+      window.__done = true;
+    }
+  </script>
+</body>
+</html>

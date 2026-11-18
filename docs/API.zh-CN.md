@@ -3,7 +3,7 @@
 # wgpu-kit API 参考
 
 > 面向 TypeScript 的 WebGPU 计算工具，需要支持 WebGPU 的浏览器。计算核心无运行时依赖。
-> 版本:v2.1.0 · [English reference](API.md)
+> 版本：v2.2.0 · [English reference](API.md)
 
 **入口总览**
 
@@ -20,6 +20,9 @@
 
 `auxInputs`、dispatch count、托管批次与 `typedElementKernel` 已随 2.1.0 发布。
 导入的 API 审计仍以 npm 2.0.0 为历史基线，2.1.0 新增能力依据对应源码文件记录。
+
+2.2.0 新增 [`PingPong.encodeWith()`](#encodewith)，可在托管批次中管理双缓冲换边。
+应用自有设备与原生渲染 pass 的完整示例见[计算与渲染组合](COMPUTE-RENDER.zh-CN.md)。
 
 ---
 
@@ -389,11 +392,68 @@ const pp = await PingPong.create({ pos: 'vec2f', vel: 'vec2f' }, 100_000);
 
 | 成员 | 类型 | 说明 |
 | --- | --- | --- |
-| .current | Record\<K, Buffer\> (readonly) | 当前帧数据侧(渲染/读回用) |
-| .other | Record\<K, Buffer\> (readonly) | 另一侧(kernel 写入目标) |
+| .current | `{ [P in K]: Buffer<F[P]> }` (只读属性) | 当前帧数据侧(渲染/读回用) |
+| .other | `{ [P in K]: Buffer<F[P]> }` (只读属性) | 另一侧(kernel 写入目标) |
 | .swap ( ) | void | 翻转当前侧 |
 | .runWith ( fn ) | Promise\<void\> | 以 (写侧, 读侧) 调用 fn 后自动 swap |
+| .encodeWith ( batch, fn ) | void | 同步编码后换边，取消时恢复初始方向。 |
+| .clone ( ) | `Promise<PingPong<K, F>>` | 按相同字段、类型与长度分配两侧，不复制数值 |
 | .destroy ( ) | void | 销毁全部缓冲 |
+
+### encodeWith
+
+自 2.2.0 起可用。
+
+```ts
+encodeWith(
+  batch: ComputeBatch,
+  fn: (write: { [P in K]: Buffer<F[P]> }, read: { [P in K]: Buffer<F[P]> }) => undefined,
+): void;
+```
+
+调用前先准备内核，`batch` 必须为 open。回调依次接收 `write = other`、
+`read = current`，各字段保留具体 Buffer kind。回调必须同步返回 `undefined`：
+TypeScript 会拒绝 `async` 回调，运行时也会拒绝返回的 Promise 或 thenable。
+回调只应向 `batch.encoder` 编码，并向内核传入 `{ batch }`；提交或取消应放在回调之外。
+
+回调成功后立即换边，让下一步编码取得新的逻辑当前侧；helper 不提交，也不等待 GPU
+完成。同一实例首次参与该批次时会记录初始方向，并由该批次占用到批次结束。
+可以在同一批次中反复调用。即使回调未编码任何工作，只要正常返回也会换边。因此
+dispatch count 为零时，请跳过整个 `encodeWith()` 调用。独立声明回调时可标注返回类型 `: undefined`。
+
+同一 PingPong 不能加入另一 open 批次或嵌套重入自身
+helper，占用期间也不能手动 `swap()` 或调用原有 `runWith()`。反过来，原有
+`runWith()` 尚未结束时，也不能开始 `encodeWith()`。
+
+`batch.cancel()` 会将所有参与的 PingPong 恢复到各自首次调用 helper 时的方向。
+回调抛错（含违规异步回调）会取消**整个批次**，恢复本批所有参与者，并继续抛出错误。
+`batch.submit()` 中的 `encoder.finish()` 或 `queue.submit()` 同步抛错也会恢复方向。
+成功提交则保留最终方向，并立即释放占用；随后 GPU 完成失败，不会回滚已提交的方向。
+
+恢复范围只有此 helper 管理的侧选择，不撤销已提交 GPU 工作、CPU 缓冲写入或 helper
+之外的手动 swap。未被占用时，原有独立 `swap()` 与 `runWith()` 行为保持不变；
+`runWith()` 仍在异步回调成功后换边，不提供批次取消时的方向恢复。
+
+```ts
+import { PingPong, createBatch, typedElementKernel } from 'wgpu-kit';
+
+const pp = await PingPong.create({ value: 'f32' }, 4);
+pp.current.value.write(new Float32Array([1, 2, 3, 4]));
+const step = typedElementKernel({
+  state: { next: 'f32' }, inputs: { previous: 'f32' },
+  code: 'fn userFn(i: u32) { next[i] = previous[i] + 1.0; }',
+});
+await step.prepare();
+const batch = await createBatch();
+for (let i = 0; i < 3; i++) {
+  pp.encodeWith(batch, (write, read) => {
+    step.encode(batch.encoder, { next: write.value, previous: read.value }, undefined, { batch });
+  });
+}
+batch.submit(); // 改为 batch.cancel() 可恢复初始方向。
+console.log(Array.from(await pp.current.value.read())); // [4, 5, 6, 7]
+step.destroy(); pp.destroy();
+```
 
 ### 代码示例
 

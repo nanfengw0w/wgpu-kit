@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Buffer, GpuContext, UsageError, createBatch, elementKernel } from '../src/index.ts';
+import { Buffer, GpuContext, PingPong, UsageError, createBatch, elementKernel } from '../src/index.ts';
 
 interface Snapshot {
   buffer: GPUBuffer;
@@ -169,5 +169,199 @@ describe('ComputeBatch', () => {
     await Promise.resolve();
     k.destroy();
     out.destroy();
+  });
+});
+
+describe('PingPong.encodeWith', () => {
+  it('同步映射读写侧并自动交换,成功提交后可在下一批继续', async () => {
+    const gpu = fakeGpu();
+    const pp = await PingPong.create({ value: 'f32' }, 1);
+    const first = pp.current.value, second = pp.other.value;
+    const batch = await createBatch();
+    const reads: Buffer[] = [], writes: Buffer[] = [];
+    for (let i = 0; i < 3; i++) {
+      pp.encodeWith(batch, (write, read) => { writes.push(write.value); reads.push(read.value); });
+    }
+    expect(reads).toEqual([first, second, first]);
+    expect(writes).toEqual([second, first, second]);
+    expect(pp.current.value).toBe(second);
+    batch.submit();
+    expect(gpu.submit).toHaveBeenCalledOnce();
+    expect(pp.current.value).toBe(second);
+    const next = await createBatch();
+    pp.encodeWith(next, () => {});
+    expect(pp.current.value).toBe(first);
+    next.cancel();
+    expect(pp.current.value).toBe(second);
+    pp.swap();
+    expect(pp.current.value).toBe(first);
+    pp.destroy();
+  });
+
+  it('取消恢复各 PingPong 入批时的方向,重复取消不再交换', async () => {
+    const gpu = fakeGpu();
+    const a = await PingPong.create({ value: 'u32' }, 1);
+    const b = await PingPong.create({ value: 'u32' }, 1);
+    b.swap();
+    const initialA = a.current.value, initialB = b.current.value;
+    const batch = await createBatch();
+    for (let i = 0; i < 3; i++) a.encodeWith(batch, () => {});
+    for (let i = 0; i < 2; i++) b.encodeWith(batch, () => {});
+    batch.cancel();
+    batch.cancel();
+    expect(a.current.value).toBe(initialA);
+    expect(b.current.value).toBe(initialB);
+    expect(gpu.submit).not.toHaveBeenCalled();
+    a.swap(); b.swap();
+    a.destroy(); b.destroy();
+  });
+
+  it('回调异常取消整批,恢复此前已交换的其他 PingPong', async () => {
+    const gpu = fakeGpu();
+    const a = await PingPong.create({ value: 'u32' }, 1);
+    const b = await PingPong.create({ value: 'u32' }, 1);
+    const firstA = a.current.value, firstB = b.current.value;
+    const batch = await createBatch();
+    a.encodeWith(batch, () => {});
+    const failure = new Error('render setup failed');
+    expect(() => b.encodeWith(batch, () => { throw failure; })).toThrow(failure);
+    expect(batch.status).toBe('cancelled');
+    expect(a.current.value).toBe(firstA);
+    expect(b.current.value).toBe(firstB);
+    expect(gpu.submit).not.toHaveBeenCalled();
+    a.destroy(); b.destroy();
+  });
+
+  it.each(['finish', 'submit'] as const)('%s 同步失败恢复方向并解锁', async (failure) => {
+    const gpu = fakeGpu();
+    const pp = await PingPong.create({ value: 'u32' }, 1);
+    const initial = pp.current.value;
+    const batch = await createBatch();
+    pp.encodeWith(batch, () => {});
+    const fail = () => { throw new Error('submission failed'); };
+    if (failure === 'finish') vi.spyOn(batch.encoder, 'finish').mockImplementation(fail);
+    else gpu.submit.mockImplementation(fail);
+    expect(() => batch.submit()).toThrow('submission failed');
+    expect(batch.status).toBe('cancelled');
+    expect(pp.current.value).toBe(initial);
+    pp.swap();
+    pp.destroy();
+  });
+
+  it('已提交后的 GPU 失败不回滚已发布方向', async () => {
+    const gpu = fakeGpu();
+    const pp = await PingPong.create({ value: 'f32' }, 1);
+    const out = pp.other.value;
+    const k = elementKernel({ state: { out: 'f32' }, code: 'fn userFn(i:u32){out[i]=7.0;}' });
+    await k.prepare();
+    const batch = await createBatch();
+    pp.encodeWith(batch, (write) => { k.encode(batch.encoder, { out: write.value }, undefined, { batch }); });
+    batch.submit();
+    gpu.failures[0]!(new Error('device lost'));
+    await Promise.resolve();
+    expect(batch.status).toBe('submitted');
+    expect(pp.current.value).toBe(out);
+    pp.swap();
+    k.destroy(); pp.destroy();
+  });
+
+  it('占用期间拒绝另一批次、手动交换和 runWith,不误取消原批次', async () => {
+    fakeGpu();
+    const pp = await PingPong.create({ value: 'u32' }, 1);
+    const batch = await createBatch(), other = await createBatch();
+    pp.encodeWith(batch, () => {});
+    const callback = vi.fn(() => undefined);
+    expect(() => pp.encodeWith(other, callback)).toThrow(UsageError);
+    expect(() => pp.swap()).toThrow(UsageError);
+    await expect(pp.runWith(async () => { callback(); })).rejects.toThrow(UsageError);
+    expect(callback).not.toHaveBeenCalled();
+    expect(batch.status).toBe('open');
+    expect(other.status).toBe('open');
+    batch.cancel(); other.cancel(); pp.destroy();
+  });
+
+  it('拒绝同一 PingPong 回调重入并取消部分编码', async () => {
+    fakeGpu();
+    const pp = await PingPong.create({ value: 'u32' }, 1);
+    const initial = pp.current.value;
+    const batch = await createBatch();
+    expect(() => pp.encodeWith(batch, () => { pp.encodeWith(batch, () => {}); })).toThrow(UsageError);
+    expect(batch.status).toBe('cancelled');
+    expect(pp.current.value).toBe(initial);
+    pp.destroy();
+  });
+
+  it('回调中取消不会再次换边,取消后回调仍不能手动交换', async () => {
+    fakeGpu();
+    const pp = await PingPong.create({ value: 'u32' }, 1);
+    const initial = pp.current.value;
+    const batch = await createBatch();
+    pp.encodeWith(batch, () => {});
+    expect(() => pp.encodeWith(batch, () => {
+      batch.cancel();
+      expect(() => pp.swap()).toThrow(UsageError);
+    })).toThrow(UsageError);
+    expect(pp.current.value).toBe(initial);
+    expect(batch.status).toBe('cancelled');
+    pp.swap(); pp.destroy();
+  });
+
+  it('回调中提交在 GPU 提交前被拒绝', async () => {
+    const gpu = fakeGpu();
+    const pp = await PingPong.create({ value: 'u32' }, 1);
+    const initial = pp.current.value;
+    const batch = await createBatch();
+    expect(() => pp.encodeWith(batch, () => { batch.submit(); })).toThrow(UsageError);
+    expect(gpu.submit).not.toHaveBeenCalled();
+    expect(batch.status).toBe('cancelled');
+    expect(pp.current.value).toBe(initial);
+    pp.destroy();
+  });
+
+  it('运行时拒绝 thenable 回调并处理其后续拒绝', async () => {
+    fakeGpu();
+    const pp = await PingPong.create({ value: 'u32' }, 1);
+    const initial = pp.current.value;
+    const batch = await createBatch();
+    const asyncCallback = async () => { await Promise.resolve(); throw new Error('late callback rejection'); };
+    expect(() => pp.encodeWith(batch, asyncCallback as unknown as () => undefined)).toThrow('synchronous');
+    expect(batch.status).toBe('cancelled');
+    expect(pp.current.value).toBe(initial);
+    await Promise.resolve(); await Promise.resolve();
+    pp.destroy();
+  });
+
+  it('旧 runWith 等待期间拒绝 encodeWith,旧成功与失败行为保持', async () => {
+    fakeGpu();
+    const pp = await PingPong.create({ value: 'u32' }, 1);
+    const initial = pp.current.value;
+    let complete!: () => void;
+    const pending = pp.runWith(() => new Promise<void>((resolve) => { complete = resolve; }));
+    const batch = await createBatch();
+    const callback = vi.fn(() => undefined);
+    expect(() => pp.encodeWith(batch, callback)).toThrow(UsageError);
+    expect(callback).not.toHaveBeenCalled();
+    expect(batch.status).toBe('open');
+    complete(); await pending;
+    expect(pp.current.value).not.toBe(initial);
+    const after = pp.current.value;
+    await expect(pp.runWith(async () => { throw new Error('legacy failure'); })).rejects.toThrow('legacy failure');
+    expect(pp.current.value).toBe(after);
+    pp.encodeWith(batch, () => {});
+    batch.cancel();
+    expect(pp.current.value).toBe(after);
+    pp.destroy();
+  });
+
+  it('关闭或伪造的 batch 不执行回调或占用 PingPong', async () => {
+    fakeGpu();
+    const pp = await PingPong.create({ value: 'u32' }, 1);
+    const batch = await createBatch();
+    batch.cancel();
+    const callback = vi.fn(() => undefined);
+    expect(() => pp.encodeWith(batch, callback)).toThrow(UsageError);
+    expect(() => pp.encodeWith({ ...batch }, callback)).toThrow(UsageError);
+    expect(callback).not.toHaveBeenCalled();
+    pp.swap(); pp.destroy();
   });
 });

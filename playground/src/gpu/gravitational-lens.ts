@@ -346,7 +346,7 @@ export async function mountGravitationalLens(
     }
   });
   request();
-  onStatus("Live WebGPU · wgpu-kit 2.1.0");
+  onStatus("Live WebGPU · wgpu-kit 2.2.0");
 
   return {
     destroy() {

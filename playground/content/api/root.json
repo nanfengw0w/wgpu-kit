@@ -1,6 +1,6 @@
 {
   "package": "wgpu-kit",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "auditBaseline": "2.0.0",
   "entrypoints": [
     {
@@ -921,7 +921,7 @@
               "parameters": [
                 {
                   "name": "fn",
-                  "type": "(write: Record<K, Buffer>, read: Record<K, Buffer>) => Promise<void>",
+                  "type": "(write: { [P in K]: Buffer<F[P]> }, read: { [P in K]: Buffer<F[P]> }) => Promise<void>",
                   "required": true,
                   "description": {
                     "en": "Callback receives write=other and read=current in that order.",
@@ -954,6 +954,97 @@
               ]
             },
             {
+              "name": "encodeWith",
+              "kind": "method",
+              "signature": "encodeWith(batch: ComputeBatch, fn: (write: { [P in K]: Buffer<F[P]> }, read: { [P in K]: Buffer<F[P]> }) => undefined): void",
+              "source": "src/core/pingpong.ts",
+              "description": {
+                "en": "Synchronously encode with typed write/read sides, then flip the logical current side. Participating side selections are restored if the unsubmitted batch is cancelled.",
+                "zh": "以保留字段 kind 的写／读侧同步编码，随后翻转逻辑当前侧。未提交批次取消时，恢复参与者的侧选择。"
+              },
+              "parameters": [
+                {
+                  "name": "batch",
+                  "type": "ComputeBatch",
+                  "required": true,
+                  "description": {
+                    "en": "Open batch; encode through its encoder and pass this batch to kernel encode options.",
+                    "zh": "open 批次；通过其 encoder 编码，并向内核编码选项传入此 batch。"
+                  }
+                },
+                {
+                  "name": "fn",
+                  "type": "(write: { [P in K]: Buffer<F[P]> }, read: { [P in K]: Buffer<F[P]> }) => undefined",
+                  "required": true,
+                  "description": {
+                    "en": "Receives write=other and read=current. Must return undefined synchronously; async callbacks are rejected by TypeScript. Encode only; submit or cancel outside the callback.",
+                    "zh": "接收 write=other、read=current。须同步返回 undefined，TypeScript 拒绝 async 回调。仅编码，提交或取消放在回调之外。"
+                  }
+                }
+              ],
+              "returns": {
+                "type": "void",
+                "description": {
+                  "en": "A successful callback is followed immediately by a side flip; no submission or GPU completion wait.",
+                  "zh": "回调成功后立即换边，不提交或等待 GPU 完成。"
+                }
+              },
+              "constraints": [
+                {
+                  "en": "Added in 2.2.0.",
+                  "zh": "自 2.2.0 起可用。"
+                },
+                {
+                  "en": "Prepare kernels before calling. Each callback receives per-field Buffer<F[P]> sides. Return undefined synchronously; a returned Promise or thenable is also rejected at runtime.",
+                  "zh": "调用前准备内核。回调两侧各字段均为 Buffer<F[P]>。须同步返回 undefined，运行时也拒绝返回的 Promise 或 thenable。"
+                },
+                {
+                  "en": "The first helper call per PingPong per batch records its initial side and reserves the instance until the batch settles. A successful callback swaps even if it records no work. Skip encodeWith() when the dispatch count is zero. A named callback can declare an undefined return type.",
+                  "zh": "每个 PingPong 在该批首次调用 helper 时记录初始方向，并占用到批次结束。回调正常返回后会换边，即使没有编码工作。dispatch count 为零时跳过 encodeWith()，独立声明回调时可标注 undefined 返回类型。"
+                },
+                {
+                  "en": "A reserved PingPong cannot join another open batch or re-enter its own helper. Manual swap() and runWith() are rejected while reserved. An in-flight legacy runWith() also prevents this helper from starting.",
+                  "zh": "被占用的 PingPong 不能加入另一 open 批次或重入自身 helper；占用期间拒绝手动 swap() 与 runWith()。原 runWith() 尚在执行时，也不能开始此 helper。"
+                },
+                {
+                  "en": "Call batch.submit() or batch.cancel() outside the callback. The callback should only encode into batch.encoder, including { batch } for managed kernels; it must not finish or submit the encoder itself.",
+                  "zh": "在回调之外调用 batch.submit() 或 batch.cancel()。回调只向 batch.encoder 编码，托管内核须传 { batch }，不得自行 finish 或提交 encoder。"
+                },
+                {
+                  "en": "batch.cancel() restores all participating PingPongs to their first helper call baseline. A callback exception cancels the entire batch, restores every participant, and propagates the original error; this includes rejected asynchronous callback use.",
+                  "zh": "batch.cancel() 恢复本批所有参与 PingPong 到首次 helper 调用的方向。回调抛错会取消整个批次，恢复所有参与者，并传播原错误；违规异步回调也包含在内。"
+                },
+                {
+                  "en": "A synchronous encoder.finish() or queue.submit() exception in batch.submit() cancels the batch and restores participating sides. Successful submission releases ownership and keeps final directions; a later GPU completion failure does not roll back already-submitted directions.",
+                  "zh": "batch.submit() 中 encoder.finish() 或 queue.submit() 同步抛错会取消批次并恢复参与者方向。成功提交即释放占用且保留最终方向；随后 GPU 完成失败不回滚已提交方向。"
+                },
+                {
+                  "en": "Restoration changes only helper-managed side selection. It does not undo submitted GPU commands, CPU buffer writes or manual swaps outside the helper. Unreserved swap() and runWith() retain their legacy behavior; runWith() does not gain batch cancellation restoration.",
+                  "zh": "恢复仅改变 helper 管理的侧选择，不撤销已提交 GPU 命令、CPU 缓冲写入或 helper 外的手动 swap。未被占用的 swap() 与 runWith() 保留原行为；runWith() 不新增批次取消恢复。"
+                }
+              ],
+              "errors": [
+                {
+                  "en": "UsageError for a closed/invalid batch, conflicting PingPong ownership or re-entry, or an in-flight legacy runWith(). These precondition failures do not invoke the callback.",
+                  "zh": "批次无效／已关闭、PingPong 占用冲突或重入、原 runWith() 尚在执行时抛 UsageError；这些前置失败不执行回调。"
+                },
+                {
+                  "en": "Callback exceptions are rethrown after whole-batch cancellation. A returned Promise/thenable causes UsageError and the same cancellation/restoration.",
+                  "zh": "回调错误在整批取消后重新抛出。返回 Promise／thenable 时抛 UsageError，并执行相同取消与恢复。"
+                }
+              ],
+              "examples": [
+                {
+                  "language": "typescript",
+                  "caption": {
+                    "en": "Three steps in one submission",
+                    "zh": "一次提交执行三步"
+                  },
+                  "code": "import { PingPong, createBatch, typedElementKernel } from 'wgpu-kit';\nconst pp = await PingPong.create({ value: 'f32' }, 4);\npp.current.value.write(new Float32Array([1, 2, 3, 4]));\nconst step = typedElementKernel({\n  state: { next: 'f32' }, inputs: { previous: 'f32' },\n  code: 'fn userFn(i: u32) { next[i] = previous[i] + 1.0; }',\n});\nawait step.prepare();\nconst batch = await createBatch();\nfor (let i = 0; i < 3; i++) {\n  pp.encodeWith(batch, (write, read) => {\n    step.encode(batch.encoder, { next: write.value, previous: read.value }, undefined, { batch });\n  });\n}\nbatch.submit(); // Or cancel() instead, to restore the initial side.\nconsole.log(Array.from(await pp.current.value.read())); // [4, 5, 6, 7]\nstep.destroy(); pp.destroy();"
+                }
+              ]
+            },
+            {
               "name": "clone",
               "kind": "method",
               "signature": "clone(): Promise<PingPong<K, F>>",
@@ -963,7 +1054,7 @@
               },
               "parameters": [],
               "returns": {
-                "type": "Promise<PingPong<K>>",
+                "type": "Promise<PingPong<K, F>>",
                 "description": {
                   "en": "Fresh same-shaped group.",
                   "zh": "新的同形组。"

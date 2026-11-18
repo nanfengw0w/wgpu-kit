@@ -137,6 +137,21 @@ async function pingPongTypes(): Promise<void> {
     const wrong: Buffer<'f32'> = write.chem;
     void wrong;
   });
+  const encoded: void = state.encodeWith(batch, (write, read) => {
+    const chem: Buffer<'vec2f'> = write.chem;
+    const seed: Buffer<'u32'> = read.seed;
+    step.encode(batch.encoder, { next: chem, previous: read.chem, seed }, undefined, { batch });
+    // @ts-expect-error encodeWith retains each field's Buffer kind.
+    const wrong: Buffer<'f32'> = write.chem;
+    // @ts-expect-error encodeWith retains field names.
+    read.missing;
+    void wrong;
+  });
+  // @ts-expect-error encodeWith is synchronous; async callbacks are not allowed.
+  state.encodeWith(batch, async () => {});
+  // @ts-expect-error returning a thenable is also asynchronous.
+  state.encodeWith(batch, () => Promise.resolve());
+  void encoded;
 
   const cloned = await state.clone();
   const clonedChem: Buffer<'vec2f'> = cloned.current.chem;
